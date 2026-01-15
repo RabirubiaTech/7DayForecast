@@ -36,15 +36,20 @@ jobs:
             const marine = await fetch(
               "https://marine-api.open-meteo.com/v1/marine" +
               "?latitude=18.35&longitude=-64.85" +
-              "&daily=wave_height_max,wave_period_max,wind_speed_max,wind_gusts_max,wind_direction_dominant" +
+              "&daily=wave_height_max,wave_period_max,wind_speed_max,wind_gusts_10m_max,wind_direction_dominant" +
               "&timezone=America/Puerto_Rico"
             ).then(r => r.json());
+
+            if (!marine.daily) {
+              await generateFallbackImage();
+              return;
+            }
 
             const days = marine.daily.time;
             const wave = marine.daily.wave_height_max;
             const period = marine.daily.wave_period_max;
             const wind = marine.daily.wind_speed_max;
-            const gust = marine.daily.wind_gusts_max;
+            const gust = marine.daily.wind_gusts_10m_max;
             const dir = marine.daily.wind_direction_dominant;
 
             const logo = await loadImage(
@@ -55,7 +60,20 @@ jobs:
             fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
           }
 
-          // ---- Helpers ----
+          async function generateFallbackImage() {
+            ctx.fillStyle = '#f1f5f9';
+            ctx.fillRect(0, 0, 1080, 1080);
+
+            ctx.fillStyle = '#334155';
+            ctx.font = 'bold 60px system-ui';
+            ctx.textAlign = 'center';
+            ctx.fillText('Marine data unavailable', 540, 500);
+            ctx.font = 'italic 40px system-ui';
+            ctx.fillText('Check back later', 540, 580);
+
+            fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
+          }
+
           function compass(d){
             const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
             return dirs[Math.round(d/22.5)%16];
@@ -74,17 +92,17 @@ jobs:
           }
 
           function windColor(speed) {
-            if (speed <= 10) return "#38bdf8"; // light blue
-            if (speed <= 15) return "#22c55e"; // green
-            if (speed <= 20) return "#eab308"; // yellow
-            if (speed <= 25) return "#f97316"; // orange
-            return "#ef4444"; // red
+            if (speed <= 10) return "#38bdf8";
+            if (speed <= 15) return "#22c55e";
+            if (speed <= 20) return "#eab308";
+            if (speed <= 25) return "#f97316";
+            return "#ef4444";
           }
 
           function dangerFlag(wind, wave) {
-            if (wind > 25 || wave > 6) return { color: "#ef4444", label: "🔴" }; // Hazardous
-            if (wind >= 15 || wave >= 4) return { color: "#eab308", label: "🟡" }; // Caution
-            return { color: "#22c55e", label: "🟢" }; // Safe
+            if (wind > 25 || wave > 6) return { color: "#ef4444", label: "🔴" };
+            if (wind >= 15 || wave >= 4) return { color: "#eab308", label: "🟡" };
+            return { color: "#22c55e", label: "🟢" };
           }
 
           function drawWaveIcon(x, y) {
@@ -108,14 +126,12 @@ jobs:
           }
 
           function drawCard(days, wave, period, wind, gust, dir, logo, astTime) {
-            // Background
             const grad = ctx.createLinearGradient(0,0,0,1080);
             grad.addColorStop(0, '#e0f2fe');
             grad.addColorStop(1, '#f9fafb');
             ctx.fillStyle = grad;
             ctx.fillRect(0, 0, 1080, 1080);
 
-            // Logo + header
             ctx.drawImage(logo, 60, 60, 200, 200);
 
             ctx.textAlign = 'left';
@@ -140,9 +156,8 @@ jobs:
             ctx.font = 'bold 46px system-ui';
             ctx.fillText('7-Day Wind, Gust & Wave Forecast', 60, 300);
 
-            // Table layout
             const startY = 360;
-            const rowHeight = 70; // compact
+            const rowHeight = 70;
             const iconColX = 60;
             const dayColX = 120;
             const windColX = 240;
@@ -152,11 +167,10 @@ jobs:
             const periodColX = 760;
             const flagColX = 920;
 
-            // Header row
             ctx.font = 'bold 28px system-ui';
             ctx.fillStyle = '#334155';
             ctx.textAlign = 'left';
-            ctx.fillText(' ', iconColX, startY); // icon header blank
+            ctx.fillText(' ', iconColX, startY);
             ctx.fillText('Day', dayColX, startY);
             ctx.fillText('Wind', windColX, startY);
             ctx.fillText('Gust', gustColX, startY);
@@ -165,7 +179,6 @@ jobs:
             ctx.fillText('Period', periodColX, startY);
             ctx.fillText('Flag', flagColX, startY);
 
-            // Horizontal grid lines
             ctx.strokeStyle = '#e5e7eb';
             ctx.lineWidth = 1;
             for (let i = 0; i <= days.length; i++) {
@@ -176,7 +189,6 @@ jobs:
               ctx.stroke();
             }
 
-            // Rows
             ctx.font = '26px system-ui';
             for (let i = 0; i < days.length; i++) {
               const centerY = startY + (i + 1) * rowHeight;
@@ -191,52 +203,40 @@ jobs:
 
               const flag = dangerFlag(w, wh);
 
-              // Icon column (wave + arrow)
               ctx.textAlign = 'center';
               drawWaveIcon(iconColX, centerY - 10);
               ctx.fillStyle = '#0f172a';
               ctx.font = '24px system-ui';
               ctx.fillText(arrowForDir(d), iconColX, centerY + 16);
 
-              // Day
               ctx.textAlign = 'left';
               ctx.fillStyle = '#0f172a';
               ctx.font = '26px system-ui';
               ctx.fillText(label, dayColX, centerY);
 
-              // Wind (color-coded)
               ctx.fillStyle = windColor(w);
-              ctx.font = '26px system-ui';
               ctx.fillText(`${Math.round(w)} mph`, windColX, centerY);
 
-              // Gust (color-coded, slightly dimmer)
               ctx.fillStyle = windColor(g);
               ctx.globalAlpha = 0.85;
               ctx.fillText(`${Math.round(g)} mph`, gustColX, centerY);
               ctx.globalAlpha = 1.0;
 
-              // Direction (text + compass)
               ctx.fillStyle = '#0f172a';
               ctx.fillText(`${compass(d)}`, dirColX, centerY);
 
-              // Wave (icon + value)
-              ctx.fillStyle = '#0f172a';
               ctx.fillText(`${wh.toFixed(1)} ft`, waveColX, centerY);
               drawWaveIcon(waveColX - 40, centerY - 10);
 
-              // Period (icon + value)
-              ctx.fillStyle = '#0f172a';
               ctx.fillText(`${per.toFixed(1)} s`, periodColX, centerY);
               drawPeriodIcon(periodColX - 40, centerY - 10);
 
-              // Danger flag
               ctx.beginPath();
               ctx.fillStyle = flag.color;
               ctx.arc(flagColX, centerY - 4, 10, 0, Math.PI * 2);
               ctx.fill();
             }
 
-            // Footer
             ctx.textAlign = 'center';
             ctx.font = 'italic 34px system-ui';
             ctx.fillStyle = '#64748b';
