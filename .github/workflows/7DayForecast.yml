@@ -33,24 +33,49 @@ jobs:
           const astTime = new Date(now.getTime() - 4*60*60*1000);
 
           async function run() {
+            // --- Fetch Marine (waves only) ---
             const marine = await fetch(
               "https://marine-api.open-meteo.com/v1/marine" +
               "?latitude=18.35&longitude=-64.85" +
-              "&daily=wave_height_max,wave_period_max,wind_speed_max,wind_gusts_10m_max,wind_direction_dominant" +
+              "&daily=wave_height_max,wave_period_max,wave_direction_dominant" +
               "&timezone=America/Puerto_Rico"
             ).then(r => r.json());
 
-            if (!marine.daily) {
+            // --- Fetch Weather (wind only) ---
+            const weather = await fetch(
+              "https://api.open-meteo.com/v1/forecast" +
+              "?latitude=18.35&longitude=-64.85" +
+              "&daily=wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant" +
+              "&timezone=America/Puerto_Rico"
+            ).then(r => r.json());
+
+            // --- Validation ---
+            if (!marine.daily || !weather.daily) {
+              console.error("Missing daily blocks from API.");
               await generateFallbackImage();
               return;
             }
 
             const days = marine.daily.time;
+            if (!days || days.length === 0) {
+              console.error("Marine daily time array invalid.");
+              await generateFallbackImage();
+              return;
+            }
+
             const wave = marine.daily.wave_height_max;
             const period = marine.daily.wave_period_max;
-            const wind = marine.daily.wind_speed_max;
-            const gust = marine.daily.wind_gusts_10m_max;
-            const dir = marine.daily.wind_direction_dominant;
+            const waveDir = marine.daily.wave_direction_dominant;
+
+            const wind = weather.daily.wind_speed_10m_max;
+            const gust = weather.daily.wind_gusts_10m_max;
+            const dir = weather.daily.wind_direction_10m_dominant;
+
+            if (!wave || !period || !wind || !gust || !dir) {
+              console.error("One or more required arrays missing.");
+              await generateFallbackImage();
+              return;
+            }
 
             const logo = await loadImage(
               "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png/v1/fill/w_234,h_234,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/RWRoundLogoTransp.png"
@@ -270,6 +295,6 @@ jobs:
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Update 7-day wind & wave card - timestamp added" && git push
+          git diff --staged --quiet || git commit -m "Update 7-day wind & wave card - marine+weather split" && git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
