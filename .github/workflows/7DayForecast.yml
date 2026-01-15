@@ -1,0 +1,259 @@
+name: Update Rabirubia 7-Day Wind & Wave Card
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          set -e
+          npm install canvas node-fetch@2
+
+      - name: Generate 7-Day Wind & Wave Card
+        run: |
+          set -e
+          cat > generate.cjs << 'EOF'
+          const { createCanvas, loadImage } = require('canvas');
+          const fetch = require('node-fetch');
+          const fs = require('fs');
+
+          const canvas = createCanvas(1080, 1080);
+          const ctx = canvas.getContext('2d');
+
+          const now = new Date();
+          const astTime = new Date(now.getTime() - 4*60*60*1000);
+
+          async function run() {
+            const marine = await fetch(
+              "https://marine-api.open-meteo.com/v1/marine" +
+              "?latitude=18.35&longitude=-64.85" +
+              "&daily=wave_height_max,wave_period_max,wind_speed_max,wind_gusts_max,wind_direction_dominant" +
+              "&timezone=America/Puerto_Rico"
+            ).then(r => r.json());
+
+            const days = marine.daily.time;
+            const wave = marine.daily.wave_height_max;
+            const period = marine.daily.wave_period_max;
+            const wind = marine.daily.wind_speed_max;
+            const gust = marine.daily.wind_gusts_max;
+            const dir = marine.daily.wind_direction_dominant;
+
+            const logo = await loadImage(
+              "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png/v1/fill/w_234,h_234,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/RWRoundLogoTransp.png"
+            );
+
+            drawCard(days, wave, period, wind, gust, dir, logo, astTime);
+            fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
+          }
+
+          // ---- Helpers ----
+          function compass(d){
+            const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+            return dirs[Math.round(d/22.5)%16];
+          }
+
+          function arrowForDir(d) {
+            const deg = ((d % 360) + 360) % 360;
+            if (deg >= 337.5 || deg < 22.5) return "↑";
+            if (deg < 67.5) return "↗";
+            if (deg < 112.5) return "→";
+            if (deg < 157.5) return "↘";
+            if (deg < 202.5) return "↓";
+            if (deg < 247.5) return "↙";
+            if (deg < 292.5) return "←";
+            return "↖";
+          }
+
+          function windColor(speed) {
+            if (speed <= 10) return "#38bdf8"; // light blue
+            if (speed <= 15) return "#22c55e"; // green
+            if (speed <= 20) return "#eab308"; // yellow
+            if (speed <= 25) return "#f97316"; // orange
+            return "#ef4444"; // red
+          }
+
+          function dangerFlag(wind, wave) {
+            if (wind > 25 || wave > 6) return { color: "#ef4444", label: "🔴" }; // Hazardous
+            if (wind >= 15 || wave >= 4) return { color: "#eab308", label: "🟡" }; // Caution
+            return { color: "#22c55e", label: "🟢" }; // Safe
+          }
+
+          function drawWaveIcon(x, y) {
+            ctx.strokeStyle = "#0ea5e9";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x - 14, y + 4);
+            ctx.quadraticCurveTo(x - 7, y - 6, x, y + 4);
+            ctx.quadraticCurveTo(x + 7, y + 14, x + 14, y + 4);
+            ctx.stroke();
+          }
+
+          function drawPeriodIcon(x, y) {
+            ctx.strokeStyle = "#64748b";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x - 10, y + 4);
+            ctx.quadraticCurveTo(x - 5, y - 4, x, y + 4);
+            ctx.quadraticCurveTo(x + 5, y + 12, x + 10, y + 4);
+            ctx.stroke();
+          }
+
+          function drawCard(days, wave, period, wind, gust, dir, logo, astTime) {
+            // Background
+            const grad = ctx.createLinearGradient(0,0,0,1080);
+            grad.addColorStop(0, '#e0f2fe');
+            grad.addColorStop(1, '#f9fafb');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 1080, 1080);
+
+            // Logo + header
+            ctx.drawImage(logo, 60, 60, 200, 200);
+
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#155e75';
+            ctx.font = '600 48px system-ui';
+            ctx.fillText(
+              astTime.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' }),
+              280,
+              110
+            );
+
+            ctx.fillStyle = '#64748b';
+            ctx.font = 'italic 38px system-ui';
+            ctx.fillText(
+              `East PR & Virgin Islands • ${astTime.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })} AST`,
+              280,
+              160
+            );
+
+            ctx.fillStyle = '#1e40af';
+            ctx.font = 'bold 46px system-ui';
+            ctx.fillText('7-Day Wind, Gust & Wave Forecast', 60, 300);
+
+            // Table layout
+            const startY = 360;
+            const rowHeight = 70; // compact
+            const iconColX = 60;
+            const dayColX = 120;
+            const windColX = 240;
+            const gustColX = 360;
+            const dirColX = 480;
+            const waveColX = 620;
+            const periodColX = 760;
+            const flagColX = 920;
+
+            // Header row
+            ctx.font = 'bold 28px system-ui';
+            ctx.fillStyle = '#334155';
+            ctx.textAlign = 'left';
+            ctx.fillText(' ', iconColX, startY); // icon header blank
+            ctx.fillText('Day', dayColX, startY);
+            ctx.fillText('Wind', windColX, startY);
+            ctx.fillText('Gust', gustColX, startY);
+            ctx.fillText('Dir', dirColX, startY);
+            ctx.fillText('Wave', waveColX, startY);
+            ctx.fillText('Period', periodColX, startY);
+            ctx.fillText('Flag', flagColX, startY);
+
+            // Horizontal grid lines
+            ctx.strokeStyle = '#e5e7eb';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= days.length; i++) {
+              const y = startY + (i + 0.5) * rowHeight;
+              ctx.beginPath();
+              ctx.moveTo(50, y);
+              ctx.lineTo(1030, y);
+              ctx.stroke();
+            }
+
+            // Rows
+            ctx.font = '26px system-ui';
+            for (let i = 0; i < days.length; i++) {
+              const centerY = startY + (i + 1) * rowHeight;
+              const date = new Date(days[i]);
+              const label = date.toLocaleDateString('en-US', { weekday:'short' });
+
+              const w = wind[i] ?? 0;
+              const g = gust[i] ?? 0;
+              const wh = wave[i] ?? 0;
+              const per = period[i] ?? 0;
+              const d = dir[i] ?? 0;
+
+              const flag = dangerFlag(w, wh);
+
+              // Icon column (wave + arrow)
+              ctx.textAlign = 'center';
+              drawWaveIcon(iconColX, centerY - 10);
+              ctx.fillStyle = '#0f172a';
+              ctx.font = '24px system-ui';
+              ctx.fillText(arrowForDir(d), iconColX, centerY + 16);
+
+              // Day
+              ctx.textAlign = 'left';
+              ctx.fillStyle = '#0f172a';
+              ctx.font = '26px system-ui';
+              ctx.fillText(label, dayColX, centerY);
+
+              // Wind (color-coded)
+              ctx.fillStyle = windColor(w);
+              ctx.font = '26px system-ui';
+              ctx.fillText(`${Math.round(w)} mph`, windColX, centerY);
+
+              // Gust (color-coded, slightly dimmer)
+              ctx.fillStyle = windColor(g);
+              ctx.globalAlpha = 0.85;
+              ctx.fillText(`${Math.round(g)} mph`, gustColX, centerY);
+              ctx.globalAlpha = 1.0;
+
+              // Direction (text + compass)
+              ctx.fillStyle = '#0f172a';
+              ctx.fillText(`${compass(d)}`, dirColX, centerY);
+
+              // Wave (icon + value)
+              ctx.fillStyle = '#0f172a';
+              ctx.fillText(`${wh.toFixed(1)} ft`, waveColX, centerY);
+              drawWaveIcon(waveColX - 40, centerY - 10);
+
+              // Period (icon + value)
+              ctx.fillStyle = '#0f172a';
+              ctx.fillText(`${per.toFixed(1)} s`, periodColX, centerY);
+              drawPeriodIcon(periodColX - 40, centerY - 10);
+
+              // Danger flag
+              ctx.beginPath();
+              ctx.fillStyle = flag.color;
+              ctx.arc(flagColX, centerY - 4, 10, 0, Math.PI * 2);
+              ctx.fill();
+            }
+
+            // Footer
+            ctx.textAlign = 'center';
+            ctx.font = 'italic 34px system-ui';
+            ctx.fillStyle = '#64748b';
+            ctx.fillText('Powered by Rabirubia-API • Updated every 4 hours', 540, 1035);
+          }
+
+          run().catch(e=>{console.error(e);process.exit(1);});
+          EOF
+
+          node generate.cjs
+
+      - name: Commit & Push
+        run: |
+          set -e
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add rabirubia_7day_windwave.png
+          git diff --staged --quiet || git commit -m "Update 7-day wind & wave card - icons & flags" && git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
