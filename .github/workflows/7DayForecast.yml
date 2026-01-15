@@ -71,6 +71,14 @@ jobs:
             ctx.font = 'italic 40px system-ui';
             ctx.fillText('Check back later', 540, 580);
 
+            ctx.fillStyle = '#475569';
+            ctx.font = '28px system-ui';
+            ctx.fillText(
+              `Generated ${astTime.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })} • ${astTime.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })} AST`,
+              540,
+              650
+            );
+
             fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
           }
 
@@ -150,6 +158,14 @@ jobs:
               `East PR & Virgin Islands • ${astTime.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })} AST`,
               280,
               160
+            );
+
+            ctx.fillStyle = '#475569';
+            ctx.font = '28px system-ui';
+            ctx.fillText(
+              `Generated ${astTime.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })} • ${astTime.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })} AST`,
+              60,
+              260
             );
 
             ctx.fillStyle = '#1e40af';
@@ -254,6 +270,6 @@ jobs:
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Update 7-day wind & wave card - icons & flags" && git push
+          git diff --staged --quiet || git commit -m "Update 7-day wind & wave card - timestamp added" && git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
