@@ -1,4 +1,4 @@
-name: Update Rabirubia 7-Day Wind & Wave Card
+name: Update Rabirubia 7-Day NWS AMZ726 Marine Card
 on:
   schedule:
     - cron: '0 */4 * * *'
@@ -18,7 +18,7 @@ jobs:
           set -e
           npm install canvas node-fetch@2
 
-      - name: Generate 7-Day Wind & Wave Card
+      - name: Generate 7-Day NWS AMZ726 Marine Card
         run: |
           set -e
           cat > generate.cjs << 'EOF'
@@ -33,55 +33,101 @@ jobs:
           const astTime = new Date(now.getTime() - 4*60*60*1000);
 
           async function run() {
-            // --- Fetch Marine (waves only) ---
-            const marine = await fetch(
-              "https://marine-api.open-meteo.com/v1/marine" +
-              "?latitude=18.35&longitude=-64.85" +
-              "&daily=wave_height_max,wave_period_max,wave_direction_dominant" +
-              "&timezone=America/Puerto_Rico"
-            ).then(r => r.json());
+            // NWS Marine Zone AMZ726 forecast (JSON)
+            const nws = await fetch(
+              'https://api.weather.gov/zones/marine/AMZ726/forecast'
+            ).then(r => {
+              if (!r.ok) throw new Error('NWS API error: ' + r.status);
+              return r.json();
+            });
 
-            // --- Fetch Weather (wind only) ---
-            const weather = await fetch(
-              "https://api.open-meteo.com/v1/forecast" +
-              "?latitude=18.35&longitude=-64.85" +
-              "&daily=wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant" +
-              "&timezone=America/Puerto_Rico"
-            ).then(r => r.json());
-
-            // --- Validation ---
-            if (!marine.daily || !weather.daily) {
-              console.error("Missing daily blocks from API.");
+            if (!nws.properties || !Array.isArray(nws.properties.periods)) {
+              console.error('NWS AMZ726 forecast periods missing or invalid');
               await generateFallbackImage();
               return;
             }
 
-            const days = marine.daily.time;
-            if (!days || days.length === 0) {
-              console.error("Marine daily time array invalid.");
+            const periods = nws.properties.periods.slice(0, 7); // first 7 forecast periods
+            if (periods.length < 3) {
+              console.error('Not enough forecast periods from NWS');
               await generateFallbackImage();
               return;
             }
 
-            const wave = marine.daily.wave_height_max;
-            const period = marine.daily.wave_period_max;
-            const waveDir = marine.daily.wave_direction_dominant;
+            // Parse each period into structured values
+            const days = [];
+            const wind = [];
+            const gust = [];
+            const seas = [];
+            const period = [];
+            const dir = [];
 
-            const wind = weather.daily.wind_speed_10m_max;
-            const gust = weather.daily.wind_gusts_10m_max;
-            const dir = weather.daily.wind_direction_10m_dominant;
+            for (const p of periods) {
+              const name = p.name || '';
+              const text = (p.detailedForecast || '').toLowerCase();
 
-            if (!wave || !period || !wind || !gust || !dir) {
-              console.error("One or more required arrays missing.");
-              await generateFallbackImage();
-              return;
+              days.push(name);
+
+              // Wind speed (knots) from "east winds 15 to 20 knots" or "east winds 15 knots"
+              let windVal = null;
+              let gustVal = null;
+              let dirVal = null;
+
+              // Direction: look for "north", "northeast", etc.
+              const dirMatch = text.match(/(north|northeast|east|southeast|south|southwest|west|northwest)/);
+              if (dirMatch) {
+                dirVal = dirToDegrees(dirMatch[1]);
+              }
+
+              // Wind speed range
+              let m = text.match(/(\d+)[ ]*(to|-)[ ]*(\d+)[ ]*knots/);
+              if (m) {
+                const a = parseInt(m[1], 10);
+                const b = parseInt(m[3], 10);
+                windVal = Math.round((a + b) / 2);
+              } else {
+                // Single value
+                m = text.match(/(\d+)[ ]*knots/);
+                if (m) windVal = parseInt(m[1], 10);
+              }
+
+              // Gusts: "gusts up to 25 knots" or "gusts 25 knots"
+              let g = text.match(/gusts? (up to )?(\d+)[ ]*knots/);
+              if (g) {
+                gustVal = parseInt(g[2], 10);
+              }
+
+              // Seas / wave height: "seas 3 to 5 feet" or "seas 4 feet"
+              let seasVal = null;
+              let s = text.match(/seas? (\d+)[ ]*(to|-)[ ]*(\d+)[ ]*feet/);
+              if (s) {
+                const a = parseInt(s[1], 10);
+                const b = parseInt(s[3], 10);
+                seasVal = Math.round((a + b) / 2);
+              } else {
+                s = text.match(/seas? (around )?(\d+)[ ]*feet/);
+                if (s) seasVal = parseInt(s[2], 10);
+              }
+
+              // Period: "period 8 seconds" or "periods 7 seconds"
+              let perVal = null;
+              let pMatch = text.match(/periods? (around )?(\d+)[ ]*seconds/);
+              if (pMatch) {
+                perVal = parseInt(pMatch[2], 10);
+              }
+
+              wind.push(windVal ?? 0);
+              gust.push(gustVal ?? windVal ?? 0);
+              seas.push(seasVal ?? 0);
+              period.push(perVal ?? 0);
+              dir.push(dirVal ?? 0);
             }
 
             const logo = await loadImage(
-              "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png/v1/fill/w_234,h_234,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/RWRoundLogoTransp.png"
+              'https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png/v1/fill/w_234,h_234,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/RWRoundLogoTransp.png'
             );
 
-            drawCard(days, wave, period, wind, gust, dir, logo, astTime);
+            drawCard(days, seas, period, wind, gust, dir, logo, astTime);
             fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
           }
 
@@ -105,6 +151,20 @@ jobs:
             );
 
             fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
+          }
+
+          function dirToDegrees(word) {
+            switch (word) {
+              case 'north': return 0;
+              case 'northeast': return 45;
+              case 'east': return 90;
+              case 'southeast': return 135;
+              case 'south': return 180;
+              case 'southwest': return 225;
+              case 'west': return 270;
+              case 'northwest': return 315;
+              default: return 0;
+            }
           }
 
           function compass(d){
@@ -180,7 +240,7 @@ jobs:
             ctx.fillStyle = '#64748b';
             ctx.font = 'italic 38px system-ui';
             ctx.fillText(
-              `East PR & Virgin Islands • ${astTime.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })} AST`,
+              `NWS AMZ726 • East of Fajardo • ${astTime.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' })} AST`,
               280,
               160
             );
@@ -195,28 +255,28 @@ jobs:
 
             ctx.fillStyle = '#1e40af';
             ctx.font = 'bold 46px system-ui';
-            ctx.fillText('7-Day Wind, Gust & Wave Forecast', 60, 300);
+            ctx.fillText('7-Period NWS Marine Forecast – AMZ726', 60, 300);
 
             const startY = 360;
             const rowHeight = 70;
             const iconColX = 60;
             const dayColX = 120;
-            const windColX = 240;
-            const gustColX = 360;
-            const dirColX = 480;
-            const waveColX = 620;
-            const periodColX = 760;
+            const windColX = 260;
+            const gustColX = 380;
+            const dirColX = 500;
+            const waveColX = 640;
+            const periodColX = 780;
             const flagColX = 920;
 
             ctx.font = 'bold 28px system-ui';
             ctx.fillStyle = '#334155';
             ctx.textAlign = 'left';
             ctx.fillText(' ', iconColX, startY);
-            ctx.fillText('Day', dayColX, startY);
+            ctx.fillText('Period', dayColX, startY);
             ctx.fillText('Wind', windColX, startY);
             ctx.fillText('Gust', gustColX, startY);
             ctx.fillText('Dir', dirColX, startY);
-            ctx.fillText('Wave', waveColX, startY);
+            ctx.fillText('Seas', waveColX, startY);
             ctx.fillText('Period', periodColX, startY);
             ctx.fillText('Flag', flagColX, startY);
 
@@ -233,8 +293,7 @@ jobs:
             ctx.font = '26px system-ui';
             for (let i = 0; i < days.length; i++) {
               const centerY = startY + (i + 1) * rowHeight;
-              const date = new Date(days[i]);
-              const label = date.toLocaleDateString('en-US', { weekday:'short' });
+              const label = days[i] || '';
 
               const w = wind[i] ?? 0;
               const g = gust[i] ?? 0;
@@ -256,21 +315,21 @@ jobs:
               ctx.fillText(label, dayColX, centerY);
 
               ctx.fillStyle = windColor(w);
-              ctx.fillText(`${Math.round(w)} mph`, windColX, centerY);
+              ctx.fillText(`${Math.round(w)} kt`, windColX, centerY);
 
               ctx.fillStyle = windColor(g);
               ctx.globalAlpha = 0.85;
-              ctx.fillText(`${Math.round(g)} mph`, gustColX, centerY);
+              ctx.fillText(`${Math.round(g)} kt`, gustColX, centerY);
               ctx.globalAlpha = 1.0;
 
               ctx.fillStyle = '#0f172a';
               ctx.fillText(`${compass(d)}`, dirColX, centerY);
 
-              ctx.fillText(`${wh.toFixed(1)} ft`, waveColX, centerY);
+              ctx.fillText(`${wh.toFixed(0)} ft`, waveColX, centerY);
               drawWaveIcon(waveColX - 40, centerY - 10);
 
-              ctx.fillText(`${per.toFixed(1)} s`, periodColX, centerY);
-              drawPeriodIcon(periodColX - 40, centerY - 10);
+              ctx.fillText(per ? `${per.toFixed(0)} s` : '-', periodColX, centerY);
+              if (per) drawPeriodIcon(periodColX - 40, centerY - 10);
 
               ctx.beginPath();
               ctx.fillStyle = flag.color;
@@ -281,7 +340,7 @@ jobs:
             ctx.textAlign = 'center';
             ctx.font = 'italic 34px system-ui';
             ctx.fillStyle = '#64748b';
-            ctx.fillText('Powered by Rabirubia-API • Updated every 4 hours', 540, 1035);
+            ctx.fillText('Powered by RabirubiaWeather • NWS AMZ726 • Updated every 4 hours', 540, 1035);
           }
 
           run().catch(e=>{console.error(e);process.exit(1);});
@@ -295,6 +354,6 @@ jobs:
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Update 7-day wind & wave card - marine+weather split" && git push
+          git diff --staged --quiet || git commit -m "Update 7-day NWS AMZ726 marine card" && git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
