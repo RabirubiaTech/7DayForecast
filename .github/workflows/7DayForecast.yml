@@ -24,35 +24,62 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          set -e
           npm install canvas node-fetch@2
 
-      - name: Generate 7-Day Wind & Wave Card
+      - name: Generate Forecast Card
         run: |
-          set -e
           cat > generate.cjs << 'EOF'
           const { createCanvas, loadImage } = require('canvas');
           const fetch = require('node-fetch');
           const fs = require('fs');
 
-          const canvas = createCanvas(1080,1080);
+          const WIDTH = 1080;
+          const HEIGHT = 1080;
+          const canvas = createCanvas(WIDTH, HEIGHT);
           const ctx = canvas.getContext('2d');
 
           const now = new Date();
-          const ast = new Date(
-            now.toLocaleString("en-US",{ timeZone:"America/Puerto_Rico" })
-          );
+          const ast = new Date(now.toLocaleString("en-US", { timeZone: "America/Puerto_Rico" }));
 
-          /* ================= HELPERS ================= */
+          const GRID_POINTS = [
+            [18.05, -65.45], [18.10, -65.35], [18.05, -65.25],
+            [18.25, -65.25], [18.20, -65.15], [18.25, -65.05],
+            [18.25, -64.95], [18.20, -64.95]
+          ];
+
+          const WAVE_DAMPING = 0.75;
+          const WIND_DAMPING = 0.85;
+
           const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
-
           const circularMean = d => {
-            const r = d.map(v=>v*Math.PI/180);
+            const r=d.map(v=>v*Math.PI/180);
             return (Math.atan2(
               r.reduce((a,v)=>a+Math.sin(v),0),
               r.reduce((a,v)=>a+Math.cos(v),0)
             )*180/Math.PI+360)%360;
           };
+
+          async function fetchPoint(lat, lon) {
+            const marineURL =
+              "https://marine-api.open-meteo.com/v1/marine" +
+              `?latitude=${lat}&longitude=${lon}` +
+              "&hourly=wave_height,wave_period,wave_direction" +
+              "&timezone=America/Puerto_Rico";
+
+            const weatherURL =
+              "https://api.open-meteo.com/v1/forecast" +
+              `?latitude=${lat}&longitude=${lon}` +
+              "&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m" +
+              "&wind_speed_unit=mph" +
+              "&timezone=America/Puerto_Rico";
+
+            const [marine, weather] = await Promise.all([
+              fetch(marineURL).then(r => r.json()),
+              fetch(weatherURL).then(r => r.json())
+            ]);
+
+            return { marine, weather };
+          }
 
           function compass(d){
             const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
@@ -67,144 +94,118 @@ jobs:
             return"#ef4444";
           }
 
-          function hazardDot(w,h){
-            if(w>25||h>6)return"#ef4444";
-            if(w>=15||h>=4)return"#eab308";
-            return"#22c55e";
-          }
+          async function run() {
 
-          function drawOceanBackground(){
-            const grad = ctx.createLinearGradient(0,0,0,1080);
-            grad.addColorStop(0,"#fef3c7");
-            grad.addColorStop(0.18,"#67e8f9");
-            grad.addColorStop(0.45,"#22d3ee");
-            grad.addColorStop(1,"#075985");
-            ctx.fillStyle = grad;
-            ctx.fillRect(0,0,1080,1080);
-          }
-
-          function drawCard(days,wave,period,wind,gust,dir,buoys,logo){
-            drawOceanBackground();
-
-            ctx.fillStyle="rgba(248,250,252,0.93)";
-            ctx.fillRect(40,40,1000,1000);
-
-            ctx.drawImage(logo,460,70,160,160);
-
-            ctx.font="bold 30px system-ui";
-            ctx.fillStyle="#0f172a";
-            ctx.textAlign="center";
-            ctx.fillText(
-              "7-Day Nearshore (East of PR) Wind & Wave Forecast",
-              540,260
+            /* ---------- BACKGROUND ---------- */
+            const bg = await loadImage(
+              "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1600&q=80"
             );
-            ctx.textAlign="left";
+            ctx.drawImage(bg, 0, 0, WIDTH, HEIGHT);
+            ctx.fillStyle = "rgba(248,250,252,0.88)";
+            ctx.fillRect(40, 40, WIDTH-80, HEIGHT-80);
 
-            ctx.font="bold 20px system-ui";
-            ctx.fillStyle="#334155";
-            const hy=320;
-            ctx.fillText("Date",80,hy);
-            ctx.fillText("Wind",220,hy);
-            ctx.fillText("Gust",330,hy);
-            ctx.fillText("Dir",440,hy);
-            ctx.fillText("Seas",550,hy);
-            ctx.fillText("Per",660,hy);
+            /* ---------- DATA FETCH ---------- */
+            const responses = (await Promise.all(
+              GRID_POINTS.map(p => fetchPoint(p[0], p[1]))
+            )).filter(Boolean);
 
-            ctx.strokeStyle="#cbd5e1";
-            ctx.beginPath();
-            ctx.moveTo(80,335);
-            ctx.lineTo(960,335);
-            ctx.stroke();
+            const time = responses[0].marine.hourly.time;
+            const daily = {};
 
-            let y=375;
-            ctx.font="22px system-ui";
+            time.forEach((t,i)=>{
+              const day=t.split('T')[0];
+              daily[day] ??= { wave:[], period:[], wind:[], gust:[], dir:[] };
 
-            days.forEach((d,i)=>{
-              ctx.fillStyle="#0f172a";
-              ctx.fillText(
-                new Date(d).toLocaleDateString('en-US',{ weekday:'short' }),
-                80,y
-              );
+              const waves = responses.map(r=>r.marine.hourly.wave_height[i]).filter(v=>v!=null);
+              const periods = responses.map(r=>r.marine.hourly.wave_period[i]).filter(v=>v!=null);
+              const winds = responses.map(r=>r.weather.hourly.wind_speed_10m[i]).filter(v=>v!=null);
+              const gusts = responses.map(r=>r.weather.hourly.wind_gusts_10m[i]).filter(v=>v!=null);
+              const dirs = responses.map(r=>r.weather.hourly.wind_direction_10m[i]).filter(v=>v!=null);
 
-              ctx.fillStyle=windColor(wind[i]);
-              ctx.fillText(`${Math.round(wind[i])}`,220,y);
-              ctx.fillText(`${Math.round(gust[i])}`,330,y);
+              if(!waves.length || !winds.length) return;
 
-              ctx.fillStyle="#0f172a";
-              ctx.fillText(compass(dir[i]),440,y);
-              ctx.fillText(`${wave[i].toFixed(1)}`,550,y);
-              ctx.fillText(`${period[i].toFixed(1)}`,660,y);
-
-              ctx.fillStyle=hazardDot(wind[i],wave[i]);
-              ctx.beginPath();
-              ctx.arc(760,y-6,7,0,Math.PI*2);
-              ctx.fill();
-
-              y+=56;
+              daily[day].wave.push(mean(waves)*WAVE_DAMPING);
+              daily[day].period.push(mean(periods));
+              daily[day].wind.push(mean(winds)*WIND_DAMPING);
+              daily[day].gust.push(mean(gusts)*WIND_DAMPING);
+              daily[day].dir.push(circularMean(dirs));
             });
 
-            y+=18;
-            ctx.font="bold 22px system-ui";
-            ctx.fillStyle="#1e40af";
-            ctx.fillText("Latest Buoy Conditions",80,y);
-            y+=30;
+            /* ---------- TODAY + 6 DAYS ---------- */
+            const today = new Date(ast.getFullYear(), ast.getMonth(), ast.getDate());
+            const days = [];
 
-            ctx.font="20px system-ui";
-            buoys.forEach(b=>{
-              ctx.fillStyle="#0f172a";
-              ctx.fillText(b.name,80,y);
-              ctx.fillText(b.wave,360,y);
-              ctx.fillText(b.period,480,y);
-              ctx.fillText(b.dir,620,y);
-              y+=36;
-            });
-
-            ctx.font="18px system-ui";
-            ctx.fillStyle="#334155";
-            ctx.textAlign="center";
-            ctx.fillText(
-              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'})} AST • Rabirubia-Meteo`,
-              540,1020
-            );
-            ctx.textAlign="left";
-          }
-
-          async function run(){
-            /* ---- YOUR EXISTING GRID FETCH + daily BUILD IS HERE ---- */
-            /* daily is defined inside this function */
-
-            // AFTER daily{} is built — APPLY THE FIX
-            const todayAST = new Date(
-              ast.getFullYear(),
-              ast.getMonth(),
-              ast.getDate()
-            );
-
-            const days=[];
             for(let i=0;i<7;i++){
-              const d=new Date(todayAST);
-              d.setDate(todayAST.getDate()+i);
-              const key=d.toISOString().split("T")[0];
+              const d=new Date(today);
+              d.setDate(today.getDate()+i);
+              const key=d.toISOString().split('T')[0];
               if(daily[key]) days.push(key);
             }
 
-            const wave   = days.map(d=>Math.max(...daily[d].wave));
+            const wave = days.map(d=>Math.max(...daily[d].wave));
             const period = days.map(d=>mean(daily[d].period));
-            const wind   = days.map(d=>Math.max(...daily[d].wind));
-            const gust   = days.map(d=>Math.max(...daily[d].gust));
-            const dir    = days.map(d=>circularMean(daily[d].dir));
+            const wind = days.map(d=>Math.max(...daily[d].wind));
+            const gust = days.map(d=>Math.max(...daily[d].gust));
+            const dir = days.map(d=>circularMean(daily[d].dir));
 
-            const buoys = [
-              { name:"41043-North of PR", wave:sig_height, period:swell_period, dir:buoy_dir },
-              { name:"41056-Near Vieques", wave:sig_height_56, period:swell_period_56, dir:buoy_dir_56 }
-            ];
-
+            /* ---------- HEADER ---------- */
             const logo = await loadImage(
               "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png"
             );
+            ctx.drawImage(logo, 120, 90, 90, 90);
 
-            drawCard(days,wave,period,wind,gust,dir,buoys,logo);
-            fs.writeFileSync("rabirubia_7day_windwave.png",canvas.toBuffer());
+            ctx.font="bold 28px system-ui";
+            ctx.fillStyle="#1e40af";
+            ctx.textAlign="center";
+            ctx.fillText(
+              "7-Day Nearshore (East of PR) Wind & Wave Forecast",
+              WIDTH/2 + 40,
+              135
+            );
+            ctx.textAlign="left";
+
+            /* ---------- TABLE ---------- */
+            let y=310;
+            ctx.font="bold 18px system-ui";
+            ctx.fillStyle="#334155";
+            ["Date","Wind","Gusts","Dir","Seas","Period"].forEach((h,i)=>{
+              ctx.fillText(h, [120,260,360,460,560,660][i], y);
+            });
+
+            y+=30;
+            days.forEach((d,i)=>{
+              ctx.font="16px system-ui";
+              ctx.fillStyle="#0f172a";
+              ctx.fillText(new Date(d).toLocaleDateString('en-US',{weekday:'short'}),120,y);
+
+              ctx.fillStyle=windColor(wind[i]);
+              ctx.fillText(`${Math.round(wind[i])} mph`,260,y);
+              ctx.fillText(`${Math.round(gust[i])} mph`,360,y);
+
+              ctx.fillStyle="#0f172a";
+              ctx.fillText(compass(dir[i]),460,y);
+              ctx.fillText(`${wave[i].toFixed(1)} ft`,560,y);
+              ctx.fillText(`${period[i].toFixed(1)} s`,660,y);
+
+              ctx.fillStyle=wind[i]>=20?"#ef4444":"#22c55e";
+              ctx.beginPath();
+              ctx.arc(740,y-5,6,0,Math.PI*2);
+              ctx.fill();
+
+              y+=42;
+            });
+
+            /* ---------- FOOTER ---------- */
+            ctx.font="16px system-ui";
+            ctx.fillStyle="#475569";
+            ctx.textAlign="center";
+            ctx.fillText(
+              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit'})} AST • Rabirubia-Meteo`,
+              WIDTH/2,
+              1010
+            );
+
+            fs.writeFileSync("rabirubia_7day_windwave.png", canvas.toBuffer());
           }
 
           run().catch(e=>{console.error(e);process.exit(1)});
@@ -214,11 +215,8 @@ jobs:
 
       - name: Commit & Push
         run: |
-          set -e
-          git config user.email "action@github.com"
           git config user.name "GitHub Action"
+          git config user.email "action@github.com"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Fix forecast start date to today (AST)"
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git diff --staged --quiet || git commit -m "Fix forecast start date and daily scope"
+          git push
