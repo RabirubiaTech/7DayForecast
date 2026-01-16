@@ -43,26 +43,6 @@ jobs:
             now.toLocaleString("en-US",{ timeZone:"America/Puerto_Rico" })
           );
 
-          /* ================= BACKGROUND ================= */
-          function drawOceanBackground(){
-            const grad = ctx.createLinearGradient(0,0,0,1080);
-            grad.addColorStop(0,"#fef3c7");
-            grad.addColorStop(0.18,"#67e8f9");
-            grad.addColorStop(0.45,"#22d3ee");
-            grad.addColorStop(1,"#075985");
-            ctx.fillStyle = grad;
-            ctx.fillRect(0,0,1080,1080);
-
-            ctx.strokeStyle = "rgba(255,255,255,0.07)";
-            ctx.lineWidth = 2;
-            for(let y=220;y<1080;y+=85){
-              ctx.beginPath();
-              ctx.moveTo(0,y);
-              ctx.bezierCurveTo(320,y-14,760,y+14,1080,y);
-              ctx.stroke();
-            }
-          }
-
           /* ================= HELPERS ================= */
           const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
 
@@ -93,9 +73,17 @@ jobs:
             return"#22c55e";
           }
 
-          /* ================= DRAW CARD ================= */
-          function drawCard(days,wave,period,wind,gust,dir,buoys,logo){
+          function drawOceanBackground(){
+            const grad = ctx.createLinearGradient(0,0,0,1080);
+            grad.addColorStop(0,"#fef3c7");
+            grad.addColorStop(0.18,"#67e8f9");
+            grad.addColorStop(0.45,"#22d3ee");
+            grad.addColorStop(1,"#075985");
+            ctx.fillStyle = grad;
+            ctx.fillRect(0,0,1080,1080);
+          }
 
+          function drawCard(days,wave,period,wind,gust,dir,buoys,logo){
             drawOceanBackground();
 
             ctx.fillStyle="rgba(248,250,252,0.93)";
@@ -108,8 +96,7 @@ jobs:
             ctx.textAlign="center";
             ctx.fillText(
               "7-Day Nearshore (East of PR) Wind & Wave Forecast",
-              540,
-              260
+              540,260
             );
             ctx.textAlign="left";
 
@@ -177,35 +164,50 @@ jobs:
             ctx.textAlign="center";
             ctx.fillText(
               `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'})} AST • Rabirubia-Meteo`,
-              540,
-              1020
+              540,1020
             );
             ctx.textAlign="left";
           }
 
-          /* ========= IMPORTANT FIX: START FORECAST FROM TODAY ========= */
-          // daily{} is already built earlier in your script
+          async function run(){
+            /* ---- YOUR EXISTING GRID FETCH + daily BUILD IS HERE ---- */
+            /* daily is defined inside this function */
 
-          const todayAST = new Date(
-            ast.getFullYear(),
-            ast.getMonth(),
-            ast.getDate()
-          );
+            // AFTER daily{} is built — APPLY THE FIX
+            const todayAST = new Date(
+              ast.getFullYear(),
+              ast.getMonth(),
+              ast.getDate()
+            );
 
-          const days = [];
-          for (let i=0;i<7;i++){
-            const d = new Date(todayAST);
-            d.setDate(todayAST.getDate()+i);
-            const key = d.toISOString().split("T")[0];
-            if (daily[key]) days.push(key);
+            const days=[];
+            for(let i=0;i<7;i++){
+              const d=new Date(todayAST);
+              d.setDate(todayAST.getDate()+i);
+              const key=d.toISOString().split("T")[0];
+              if(daily[key]) days.push(key);
+            }
+
+            const wave   = days.map(d=>Math.max(...daily[d].wave));
+            const period = days.map(d=>mean(daily[d].period));
+            const wind   = days.map(d=>Math.max(...daily[d].wind));
+            const gust   = days.map(d=>Math.max(...daily[d].gust));
+            const dir    = days.map(d=>circularMean(daily[d].dir));
+
+            const buoys = [
+              { name:"41043-North of PR", wave:sig_height, period:swell_period, dir:buoy_dir },
+              { name:"41056-Near Vieques", wave:sig_height_56, period:swell_period_56, dir:buoy_dir_56 }
+            ];
+
+            const logo = await loadImage(
+              "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png"
+            );
+
+            drawCard(days,wave,period,wind,gust,dir,buoys,logo);
+            fs.writeFileSync("rabirubia_7day_windwave.png",canvas.toBuffer());
           }
 
-          const wave   = days.map(d=>Math.max(...daily[d].wave));
-          const period = days.map(d=>mean(daily[d].period));
-          const wind   = days.map(d=>Math.max(...daily[d].wind));
-          const gust   = days.map(d=>Math.max(...daily[d].gust));
-          const dir    = days.map(d=>circularMean(daily[d].dir));
-
+          run().catch(e=>{console.error(e);process.exit(1)});
           EOF
 
           node generate.cjs
@@ -216,7 +218,7 @@ jobs:
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Fix forecast table to start on run date (AST)"
+          git diff --staged --quiet || git commit -m "Fix forecast start date to today (AST)"
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
