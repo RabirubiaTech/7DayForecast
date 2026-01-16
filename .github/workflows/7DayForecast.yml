@@ -155,7 +155,7 @@ jobs:
             ctx.font="bold 30px system-ui";
             ctx.fillStyle="#1e40af";
             ctx.fillText(
-              "7-Day Nearshore Wind & Wave Forecast",
+              "7-Day Nearshore East PR) Wind & Wave Forecast",
               210,
               150
             );
@@ -185,7 +185,7 @@ jobs:
             ctx.fillStyle="#475569";
             ctx.textAlign="center";
             ctx.fillText(
-              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'})} AST • Open-Meteo Nearshore Blend`,
+              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'})} AST • Rabirubia-Meteo Nearshore Blend`,
               540,
               1000
             );
