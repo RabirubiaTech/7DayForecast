@@ -33,8 +33,7 @@ jobs:
           const fetch = require('node-fetch');
           const fs = require('fs');
 
-          const W = 1080;
-          const H = 1080;
+          const W = 1080, H = 1080;
           const canvas = createCanvas(W, H);
           const ctx = canvas.getContext('2d');
 
@@ -42,9 +41,9 @@ jobs:
           const ast = new Date(now.toLocaleString("en-US", { timeZone: "America/Puerto_Rico" }));
 
           const GRID_POINTS = [
-            [18.05, -65.45], [18.10, -65.35], [18.05, -65.25],
-            [18.25, -65.25], [18.20, -65.15], [18.25, -65.05],
-            [18.25, -64.95], [18.20, -64.95]
+            [18.05,-65.45],[18.10,-65.35],[18.05,-65.25],
+            [18.25,-65.25],[18.20,-65.15],[18.25,-65.05],
+            [18.25,-64.95],[18.20,-64.95]
           ];
 
           const WAVE_DAMPING = 0.75;
@@ -63,7 +62,6 @@ jobs:
             const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
             return dirs[Math.round(d/22.5)%16];
           }
-
           function windColor(s){
             if(s<=10)return"#38bdf8";
             if(s<=15)return"#22c55e";
@@ -72,35 +70,35 @@ jobs:
             return"#ef4444";
           }
 
-          async function fetchPoint(lat, lon) {
+          async function fetchPoint(lat, lon){
             const marine =
-              "https://marine-api.open-meteo.com/v1/marine" +
-              `?latitude=${lat}&longitude=${lon}` +
-              "&hourly=wave_height,wave_period,wave_direction" +
+              "https://marine-api.open-meteo.com/v1/marine"+
+              `?latitude=${lat}&longitude=${lon}`+
+              "&hourly=wave_height,wave_period,wave_direction"+
               "&timezone=America/Puerto_Rico";
 
             const weather =
-              "https://api.open-meteo.com/v1/forecast" +
-              `?latitude=${lat}&longitude=${lon}` +
-              "&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m" +
-              "&wind_speed_unit=mph" +
+              "https://api.open-meteo.com/v1/forecast"+
+              `?latitude=${lat}&longitude=${lon}`+
+              "&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m"+
+              "&wind_speed_unit=mph"+
               "&timezone=America/Puerto_Rico";
 
             const [m,w] = await Promise.all([
               fetch(marine).then(r=>r.json()),
               fetch(weather).then(r=>r.json())
             ]);
-            return { m, w };
+            return {m,w};
           }
 
-          async function run() {
+          async function run(){
 
             /* BACKGROUND */
             const bg = await loadImage(
               "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1600&q=80"
             );
             ctx.drawImage(bg,0,0,W,H);
-            ctx.fillStyle="rgba(248,250,252,0.9)";
+            ctx.fillStyle="rgba(248,250,252,0.92)";
             ctx.fillRect(40,40,W-80,H-80);
 
             /* DATA */
@@ -116,7 +114,7 @@ jobs:
               const periods = responses.map(r=>r.m.hourly.wave_period[i]).filter(v=>v!=null);
               const winds = responses.map(r=>r.w.hourly.wind_speed_10m[i]).filter(v=>v!=null);
               const gusts = responses.map(r=>r.w.hourly.wind_gusts_10m[i]).filter(v=>v!=null);
-              const dirs = responses.map(r=>r.w.hourly.wind_direction_10m[i]).filter(v=>v!=null);
+              const dirs  = responses.map(r=>r.w.hourly.wind_direction_10m[i]).filter(v=>v!=null);
 
               if(!waves.length) return;
 
@@ -142,51 +140,52 @@ jobs:
             const gust=days.map(d=>Math.max(...daily[d].gust));
             const dir=days.map(d=>circularMean(daily[d].dir));
 
-            /* HEADER */
+            /* HEADER BLOCK (NO OVERLAP) */
             const logo = await loadImage(
               "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png"
             );
-            ctx.drawImage(logo,140,90,90,90);
 
-            ctx.font="bold 26px system-ui";
+            const headerY = 115;
+            ctx.drawImage(logo, W/2 - 230, headerY - 40, 70, 70);
+
+            ctx.font="bold 22px system-ui";
             ctx.fillStyle="#1e40af";
-            ctx.textAlign="center";
+            ctx.textAlign="left";
             ctx.fillText(
               "7-Day Nearshore (East of PR) Wind & Wave Forecast",
-              W/2+40,
-              135
+              W/2 - 140,
+              headerY
             );
-            ctx.textAlign="left";
 
-            /* COLUMN HEADERS + ICONS */
+            /* COLUMN HEADERS */
             ctx.font="bold 18px system-ui";
             ctx.fillStyle="#334155";
-            const headers=["📅 Date","💨 Wind","🌬 Gusts","🧭 Dir","🌊 Seas","⏱ Period"];
-            const xs=[120,260,360,460,560,660];
-            headers.forEach((h,i)=>ctx.fillText(h,xs[i],300));
+            const xs=[140,300,420,540,660,780];
+            ["📅 Date","💨 Wind","🌬 Gusts","🧭 Dir","🌊 Seas","⏱ Period"]
+              .forEach((h,i)=>ctx.fillText(h,xs[i],270));
 
-            /* TABLE */
-            let y=340;
+            /* TABLE (LARGER DATA FONT) */
+            let y=315;
             days.forEach((d,i)=>{
-              ctx.font="16px system-ui";
+              ctx.font="18px system-ui";
               ctx.fillStyle="#0f172a";
-              ctx.fillText(new Date(d).toLocaleDateString("en-US",{weekday:"short"}),120,y);
+              ctx.fillText(new Date(d).toLocaleDateString("en-US",{weekday:"short"}),xs[0],y);
 
               ctx.fillStyle=windColor(wind[i]);
-              ctx.fillText(`${Math.round(wind[i])} mph`,260,y);
-              ctx.fillText(`${Math.round(gust[i])} mph`,360,y);
+              ctx.fillText(`${Math.round(wind[i])} mph`,xs[1],y);
+              ctx.fillText(`${Math.round(gust[i])} mph`,xs[2],y);
 
               ctx.fillStyle="#0f172a";
-              ctx.fillText(compass(dir[i]),460,y);
-              ctx.fillText(`${wave[i].toFixed(1)} ft`,560,y);
-              ctx.fillText(`${period[i].toFixed(1)} s`,660,y);
+              ctx.fillText(compass(dir[i]),xs[3],y);
+              ctx.fillText(`${wave[i].toFixed(1)} ft`,xs[4],y);
+              ctx.fillText(`${period[i].toFixed(1)} s`,xs[5],y);
 
               ctx.fillStyle=wind[i]>=20?"#ef4444":"#22c55e";
               ctx.beginPath();
-              ctx.arc(740,y-5,6,0,Math.PI*2);
+              ctx.arc(xs[5]+90,y-6,6,0,Math.PI*2);
               ctx.fill();
 
-              y+=42;
+              y+=44;
             });
 
             /* FOOTER */
@@ -212,5 +211,5 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Restore visual headers, icons, colors and layout"
+          git diff --staged --quiet || git commit -m "Fix header/logo overlap, adjust font sizes"
           git push
