@@ -36,7 +36,7 @@ jobs:
             // --- Fetch Marine (waves only) ---
             const marine = await fetch(
               "https://marine-api.open-meteo.com/v1/marine" +
-              "?latitude=18.35&longitude=-64.85" +
+              "?latitude=18.15&longitude=-65.00" +
               "&daily=wave_height_max,wave_period_max,wave_direction_dominant" +
               "&timezone=America/Puerto_Rico"
             ).then(r => r.json());
@@ -44,7 +44,7 @@ jobs:
             // --- Fetch Weather (wind only) ---
             const weather = await fetch(
               "https://api.open-meteo.com/v1/forecast" +
-              "?latitude=18.35&longitude=-64.85" +
+              "?latitude=18.15&longitude=-65.00" +
               "&daily=wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant" +
               "&timezone=America/Puerto_Rico"
             ).then(r => r.json());
