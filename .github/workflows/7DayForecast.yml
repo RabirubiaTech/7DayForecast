@@ -112,9 +112,60 @@ jobs:
             fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
           }
 
-          function drawCard(){ /* unchanged drawing code */ }
-          run();
-          EOF
+          function compass(d){
+          const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+          return dirs[Math.round(d/22.5)%16];
+        }
+        function windColor(s){
+          if(s<=10)return"#38bdf8";
+          if(s<=15)return"#22c55e";
+          if(s<=20)return"#eab308";
+          if(s<=25)return"#f97316";
+          return"#ef4444";
+        }
+        function dangerFlag(w,h){
+          if(w>25||h>6)return{color:"#ef4444"};
+          if(w>=15||h>=4)return{color:"#eab308"};
+          return{color:"#22c55e"};
+        }
+        
+        function drawCard(days, wave, period, wind, gust, dir, logo) {
+          ctx.fillStyle="#f8fafc";
+          ctx.fillRect(0,0,1080,1080);
+        
+          ctx.drawImage(logo,60,60,200,200);
+        
+          ctx.font="bold 42px system-ui";
+          ctx.fillStyle="#1e40af";
+          ctx.fillText("7-Day Nearshore Wind & Wave Forecast",60,300);
+        
+          let y=360;
+          days.forEach((d,i)=>{
+            const flag=dangerFlag(wind[i],wave[i]);
+        
+            ctx.font="28px system-ui";
+            ctx.fillStyle="#0f172a";
+            ctx.fillText(new Date(d).toLocaleDateString('en-US',{weekday:'short'}),60,y);
+        
+            ctx.fillStyle=windColor(wind[i]);
+            ctx.fillText(`${Math.round(wind[i])} mph`,200,y);
+            ctx.fillText(`${Math.round(gust[i])} mph`,320,y);
+        
+            ctx.fillStyle="#0f172a";
+            ctx.fillText(compass(dir[i]),440,y);
+            ctx.fillText(`${wave[i].toFixed(1)} ft`,560,y);
+            ctx.fillText(`${period[i].toFixed(1)} s`,680,y);
+        
+            ctx.fillStyle=flag.color;
+            ctx.beginPath();
+            ctx.arc(860,y-8,10,0,Math.PI*2);
+            ctx.fill();
+        
+            y+=70;
+          });
+        }
+                  run();
+                  EOF
 
           node generate.cjs
 
