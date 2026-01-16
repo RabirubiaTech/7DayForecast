@@ -147,17 +147,66 @@ jobs:
             /* ---------- BUOY SECTION ---------- */
             const buoy43 = await fetchBuoy("41043");
             const buoy56 = await fetchBuoy("41056");
-
-            ctx.font="bold 18px system-ui";
-            ctx.fillStyle="#1e293b";
-            ctx.fillText("📍 Buoy Observations", W/2, 650);
-            ctx.textAlign="center";
-
-            ctx.font="16px system-ui";
-            ctx.fillText(`41043 – North of PR: ${buoy43?.height} @ ${buoy43?.period} • ${buoy43?.dir}`, W/2, 690);
-            ctx.fillText(`41056 – Near Vieques: ${buoy56?.height} @ ${buoy56?.period} • ${buoy56?.dir}`, W/2, 720);
-
-            ctx.textAlign="left";
+            
+            const buoyY = 640;
+            const buoyW = 720;
+            const buoyH = 130;
+            const buoyX = (W - buoyW) / 2;
+            const colW = buoyW / 2;
+            
+            /* Header */
+            ctx.textAlign = "center";
+            ctx.font = "bold 18px system-ui";
+            ctx.fillStyle = "#1e293b";
+            ctx.fillText("📍 Buoy Observations", W / 2, buoyY - 15);
+            
+            /* Container */
+            ctx.fillStyle = "#f8fafc";
+            ctx.strokeStyle = "#cbd5e1";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.roundRect(buoyX, buoyY, buoyW, buoyH, 14);
+            ctx.fill();
+            ctx.stroke();
+            
+            /* Divider */
+            ctx.beginPath();
+            ctx.moveTo(buoyX + colW, buoyY);
+            ctx.lineTo(buoyX + colW, buoyY + buoyH);
+            ctx.stroke();
+            
+            /* Helper for color */
+            const buoyColor = h => {
+              if (!h) return "#e5e7eb";
+              const v = parseFloat(h);
+              return v <= 3 ? "#22c55e" : v <= 5 ? "#eab308" : "#ef4444";
+            };
+            
+            ctx.font = "bold 16px system-ui";
+            
+            /* LEFT BUOY */
+            ctx.fillStyle = buoyColor(buoy43?.height);
+            ctx.fillText("41043 – North of PR", buoyX + colW / 2, buoyY + 30);
+            
+            ctx.font = "15px system-ui";
+            ctx.fillStyle = "#0f172a";
+            ctx.fillText(`Seas: ${buoy43?.height}`, buoyX + colW / 2, buoyY + 58);
+            ctx.fillText(`Period: ${buoy43?.period}`, buoyX + colW / 2, buoyY + 80);
+            ctx.fillText(`Dir: ${buoy43?.dir}`, buoyX + colW / 2, buoyY + 102);
+            
+            /* RIGHT BUOY */
+            ctx.font = "bold 16px system-ui";
+            ctx.fillStyle = buoyColor(buoy56?.height);
+            ctx.fillText("41056 – Near Vieques", buoyX + colW + colW / 2, buoyY + 30);
+            
+            ctx.font = "15px system-ui";
+            ctx.fillStyle = "#0f172a";
+            ctx.fillText(`Seas: ${buoy56?.height}`, buoyX + colW + colW / 2, buoyY + 58);
+            ctx.fillText(`Period: ${buoy56?.period}`, buoyX + colW + colW / 2, buoyY + 80);
+            ctx.fillText(`Dir: ${buoy56?.dir}`, buoyX + colW + colW / 2, buoyY + 102);
+            
+            /* Restore alignment */
+            ctx.textAlign = "left";
 
             /* ---------- FOOTER ---------- */
             ctx.font="16px system-ui";
