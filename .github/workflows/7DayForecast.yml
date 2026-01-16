@@ -32,7 +32,6 @@ jobs:
         run: |
           set -e
           cat > generate.cjs << 'EOF'
-          // ---- SCRIPT UNCHANGED (wind mph fix already applied) ----
           const { createCanvas, loadImage } = require('canvas');
           const fetch = require('node-fetch');
           const fs = require('fs');
@@ -40,6 +39,9 @@ jobs:
           const canvas = createCanvas(1080, 1080);
           const ctx = canvas.getContext('2d');
 
+          // -----------------------------
+          // Nearshore micro-grid
+          // -----------------------------
           const GRID_POINTS = [
             [18.05, -65.45],
             [18.10, -65.35],
@@ -55,117 +57,157 @@ jobs:
           const WIND_DAMPING = 0.85;
 
           async function fetchPoint(lat, lon) {
-            const marineURL =
-              "https://marine-api.open-meteo.com/v1/marine" +
-              `?latitude=${lat}&longitude=${lon}` +
-              "&hourly=wave_height,wave_period,wave_direction" +
-              "&timezone=America/Puerto_Rico";
+            try {
+              const marineURL =
+                "https://marine-api.open-meteo.com/v1/marine" +
+                `?latitude=${lat}&longitude=${lon}` +
+                "&hourly=wave_height,wave_period,wave_direction" +
+                "&timezone=America/Puerto_Rico";
 
-            const weatherURL =
-              "https://api.open-meteo.com/v1/forecast" +
-              `?latitude=${lat}&longitude=${lon}` +
-              "&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m" +
-              "&wind_speed_unit=mph" +
-              "&timezone=America/Puerto_Rico";
+              const weatherURL =
+                "https://api.open-meteo.com/v1/forecast" +
+                `?latitude=${lat}&longitude=${lon}` +
+                "&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m" +
+                "&wind_speed_unit=mph" +
+                "&timezone=America/Puerto_Rico";
 
-            const [marine, weather] = await Promise.all([
-              fetch(marineURL).then(r => r.json()),
-              fetch(weatherURL).then(r => r.json())
-            ]);
+              const [marine, weather] = await Promise.all([
+                fetch(marineURL).then(r => r.json()),
+                fetch(weatherURL).then(r => r.json())
+              ]);
 
-            return { marine, weather };
+              if (!marine?.hourly?.wave_height || !weather?.hourly?.wind_speed_10m) {
+                return null;
+              }
+
+              return { marine, weather };
+            } catch {
+              return null;
+            }
           }
 
-          // ---- rest unchanged ----
-          const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
-          const circularMean = d => {
-            const r=d.map(v=>v*Math.PI/180);
-            return (Math.atan2(r.reduce((a,v)=>a+Math.sin(v),0),
-                               r.reduce((a,v)=>a+Math.cos(v),0))*180/Math.PI+360)%360;
+          const mean = arr => arr.reduce((a,b)=>a+b,0)/arr.length;
+
+          const circularMean = degs => {
+            const rad = degs.map(d => d * Math.PI / 180);
+            const sin = rad.reduce((a,v)=>a+Math.sin(v),0);
+            const cos = rad.reduce((a,v)=>a+Math.cos(v),0);
+            return (Math.atan2(sin, cos) * 180 / Math.PI + 360) % 360;
           };
 
           async function run() {
-            const responses = (await Promise.all(GRID_POINTS.map(p => fetchPoint(...p))));
+            const responses = (await Promise.all(
+              GRID_POINTS.map(p => fetchPoint(p[0], p[1]))
+            )).filter(Boolean);
+
+            if (responses.length < 2) {
+              throw new Error("Insufficient data");
+            }
+
             const time = responses[0].marine.hourly.time;
             const daily = {};
 
-            time.forEach((t,i)=>{
-              const d=t.split('T')[0];
-              daily[d]??={wave:[],period:[],wind:[],gust:[],dir:[]};
+            time.forEach((t, i) => {
+              const day = t.split('T')[0];
+              daily[day] ??= { wave: [], period: [], wind: [], gust: [], dir: [] };
 
-              daily[d].wave.push(mean(responses.map(r=>r.marine.hourly.wave_height[i]))*WAVE_DAMPING);
-              daily[d].period.push(mean(responses.map(r=>r.marine.hourly.wave_period[i])));
-              daily[d].wind.push(mean(responses.map(r=>r.weather.hourly.wind_speed_10m[i]))*WIND_DAMPING);
-              daily[d].gust.push(mean(responses.map(r=>r.weather.hourly.wind_gusts_10m[i]))*WIND_DAMPING);
-              daily[d].dir.push(circularMean(responses.map(r=>r.weather.hourly.wind_direction_10m[i])));
+              const waves = responses.map(r => r.marine.hourly.wave_height[i]).filter(v => v != null);
+              const periods = responses.map(r => r.marine.hourly.wave_period[i]).filter(v => v != null);
+              const winds = responses.map(r => r.weather.hourly.wind_speed_10m[i]).filter(v => v != null);
+              const gusts = responses.map(r => r.weather.hourly.wind_gusts_10m[i]).filter(v => v != null);
+              const dirs = responses.map(r => r.weather.hourly.wind_direction_10m[i]).filter(v => v != null);
+
+              if (!waves.length || !winds.length) return;
+
+              daily[day].wave.push(mean(waves) * WAVE_DAMPING);
+              daily[day].period.push(mean(periods));
+              daily[day].wind.push(mean(winds) * WIND_DAMPING);
+              daily[day].gust.push(mean(gusts) * WIND_DAMPING);
+              daily[day].dir.push(circularMean(dirs));
             });
 
-            const days = Object.keys(daily).slice(0,7);
-            const wave = days.map(d=>Math.max(...daily[d].wave));
-            const period = days.map(d=>mean(daily[d].period));
-            const wind = days.map(d=>Math.max(...daily[d].wind));
-            const gust = days.map(d=>Math.max(...daily[d].gust));
-            const dir = days.map(d=>circularMean(daily[d].dir));
+            const days = [];
+            const wave = [];
+            const period = [];
+            const wind = [];
+            const gust = [];
+            const dir = [];
 
-            const logo = await loadImage("https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png");
-            drawCard(days,wave,period,wind,gust,dir,logo);
+            Object.keys(daily).slice(0,7).forEach(d => {
+              days.push(d);
+              wave.push(Math.max(...daily[d].wave));
+              period.push(mean(daily[d].period));
+              wind.push(Math.max(...daily[d].wind));
+              gust.push(Math.max(...daily[d].gust));
+              dir.push(circularMean(daily[d].dir));
+            });
+
+            const logo = await loadImage(
+              "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png"
+            );
+
+            drawCard(days, wave, period, wind, gust, dir, logo);
             fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
           }
 
+          // -----------------------------
+          // Drawing helpers
+          // -----------------------------
           function compass(d){
-          const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
-          return dirs[Math.round(d/22.5)%16];
-        }
-        function windColor(s){
-          if(s<=10)return"#38bdf8";
-          if(s<=15)return"#22c55e";
-          if(s<=20)return"#eab308";
-          if(s<=25)return"#f97316";
-          return"#ef4444";
-        }
-        function dangerFlag(w,h){
-          if(w>25||h>6)return{color:"#ef4444"};
-          if(w>=15||h>=4)return{color:"#eab308"};
-          return{color:"#22c55e"};
-        }
-        
-        function drawCard(days, wave, period, wind, gust, dir, logo) {
-          ctx.fillStyle="#f8fafc";
-          ctx.fillRect(0,0,1080,1080);
-        
-          ctx.drawImage(logo,60,60,200,200);
-        
-          ctx.font="bold 42px system-ui";
-          ctx.fillStyle="#1e40af";
-          ctx.fillText("7-Day Nearshore Wind & Wave Forecast",60,300);
-        
-          let y=360;
-          days.forEach((d,i)=>{
-            const flag=dangerFlag(wind[i],wave[i]);
-        
-            ctx.font="28px system-ui";
-            ctx.fillStyle="#0f172a";
-            ctx.fillText(new Date(d).toLocaleDateString('en-US',{weekday:'short'}),60,y);
-        
-            ctx.fillStyle=windColor(wind[i]);
-            ctx.fillText(`${Math.round(wind[i])} mph`,200,y);
-            ctx.fillText(`${Math.round(gust[i])} mph`,320,y);
-        
-            ctx.fillStyle="#0f172a";
-            ctx.fillText(compass(dir[i]),440,y);
-            ctx.fillText(`${wave[i].toFixed(1)} ft`,560,y);
-            ctx.fillText(`${period[i].toFixed(1)} s`,680,y);
-        
-            ctx.fillStyle=flag.color;
-            ctx.beginPath();
-            ctx.arc(860,y-8,10,0,Math.PI*2);
-            ctx.fill();
-        
-            y+=70;
-          });
-        }
-                  run();
-                  EOF
+            const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+            return dirs[Math.round(d/22.5)%16];
+          }
+          function windColor(s){
+            if(s<=10)return"#38bdf8";
+            if(s<=15)return"#22c55e";
+            if(s<=20)return"#eab308";
+            if(s<=25)return"#f97316";
+            return"#ef4444";
+          }
+          function dangerFlag(w,h){
+            if(w>25||h>6)return{color:"#ef4444"};
+            if(w>=15||h>=4)return{color:"#eab308"};
+            return{color:"#22c55e"};
+          }
+
+          function drawCard(days, wave, period, wind, gust, dir, logo) {
+            ctx.fillStyle="#f8fafc";
+            ctx.fillRect(0,0,1080,1080);
+
+            ctx.drawImage(logo,60,60,200,200);
+
+            ctx.font="bold 42px system-ui";
+            ctx.fillStyle="#1e40af";
+            ctx.fillText("7-Day Nearshore Wind & Wave Forecast",60,300);
+
+            let y=360;
+            days.forEach((d,i)=>{
+              const flag=dangerFlag(wind[i],wave[i]);
+
+              ctx.font="28px system-ui";
+              ctx.fillStyle="#0f172a";
+              ctx.fillText(new Date(d).toLocaleDateString('en-US',{weekday:'short'}),60,y);
+
+              ctx.fillStyle=windColor(wind[i]);
+              ctx.fillText(`${Math.round(wind[i])} mph`,200,y);
+              ctx.fillText(`${Math.round(gust[i])} mph`,320,y);
+
+              ctx.fillStyle="#0f172a";
+              ctx.fillText(compass(dir[i]),440,y);
+              ctx.fillText(`${wave[i].toFixed(1)} ft`,560,y);
+              ctx.fillText(`${period[i].toFixed(1)} s`,680,y);
+
+              ctx.fillStyle=flag.color;
+              ctx.beginPath();
+              ctx.arc(860,y-8,10,0,Math.PI*2);
+              ctx.fill();
+
+              y+=70;
+            });
+          }
+
+          run().catch(e => { console.error(e); process.exit(1); });
+          EOF
 
           node generate.cjs
 
