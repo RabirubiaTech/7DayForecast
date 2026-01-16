@@ -27,7 +27,7 @@ jobs:
           set -e
           npm install canvas node-fetch@2
 
-      - name: Generate 7-Day Wind, Wave & Buoy Card
+      - name: Generate Forecast Card
         run: |
           set -e
           cat > generate.cjs << 'EOF'
@@ -40,9 +40,9 @@ jobs:
 
           const ast = new Date(new Date().toLocaleString("en-US",{timeZone:"America/Puerto_Rico"}));
 
-          // ------------------ helpers ------------------
           const windColor = v => v<=10?"#38bdf8":v<=15?"#22c55e":v<=20?"#eab308":v<=25?"#f97316":"#ef4444";
           const hazardColor = (w,h)=> (w>=25||h>=6)?"#ef4444":(w>=15||h>=4)?"#eab308":"#22c55e";
+
           const cell = (x,y,w,h,c)=>{ctx.fillStyle=c;ctx.fillRect(x,y,w,h);};
 
           async function fetchBuoy(id){
@@ -57,7 +57,6 @@ jobs:
               for(const p of r){
                 if(p[i("WVHT")]!=="MM"&&p[i("WVHT")]!=="99.00"){
                   return{
-                    id,
                     seas:(p[i("WVHT")]*3.28084).toFixed(1),
                     period:p[i("DPD")]!=="MM"?p[i("DPD")]:"N/A",
                     dir:p[i("MWD")]!=="999"?p[i("MWD")]:"N/A"
@@ -65,7 +64,7 @@ jobs:
                 }
               }
             }catch{}
-            return{id,seas:"N/A",period:"N/A",dir:"N/A"}
+            return{seas:"N/A",period:"N/A",dir:"N/A"}
           }
 
           async function run(){
@@ -84,71 +83,81 @@ jobs:
           }
 
           function draw(days,wind,gust,wave,period,b43,b56,logo){
-            ctx.fillStyle="#f8fafc";ctx.fillRect(0,0,1080,1080);
+            ctx.fillStyle="#f8fafc";
+            ctx.fillRect(0,0,1080,1080);
 
-            // LOGO
-            ctx.drawImage(logo,60,40,100,100);
+            // LOGO (centered)
+            ctx.drawImage(logo,490,30,100,100);
 
-            // HEADER
+            // HEADER (below logo)
             ctx.font="bold 28px system-ui";
             ctx.fillStyle="#1e40af";
             ctx.textAlign="center";
-            ctx.fillText("7-Day Nearshore (East of PR) Wind & Wave Forecast",540,95);
+            ctx.fillText(
+              "7-Day Nearshore (East of PR) Wind & Wave Forecast",
+              540,
+              160
+            );
 
-            // HEADERS
+            // TABLE HEADERS
             ctx.font="bold 20px system-ui";
             ctx.fillStyle="#334155";
-            const hy=170;
+            const hy=210;
             ["📅 Date","🌬 Wind","💨 Gusts","🧭 Dir","🌊 Seas","⏱ Period",""].forEach((t,i)=>{
-              ctx.fillText(t,120+i*120,hy);
+              ctx.fillText(t,140+i*120,hy);
             });
 
             ctx.strokeStyle="#cbd5f5";
-            ctx.beginPath();ctx.moveTo(100,185);ctx.lineTo(980,185);ctx.stroke();
+            ctx.beginPath();ctx.moveTo(120,225);ctx.lineTo(960,225);ctx.stroke();
 
             // ROWS
-            let y=225;
+            let y=265;
             ctx.font="20px system-ui";
             days.forEach((d,i)=>{
               ctx.fillStyle="#0f172a";
-              ctx.fillText(d,120,y);
+              ctx.fillText(d,140,y);
 
-              cell(240,y-18,90,28,windColor(wind[i]));
+              cell(260,y-18,90,28,windColor(wind[i]));
               ctx.fillStyle="#0f172a";
-              ctx.fillText(`${wind[i]} mph`,245,y);
+              ctx.fillText(`${wind[i]} mph`,265,y);
 
-              cell(360,y-18,90,28,windColor(gust[i]));
-              ctx.fillText(`${gust[i]} mph`,365,y);
+              cell(380,y-18,90,28,windColor(gust[i]));
+              ctx.fillText(`${gust[i]} mph`,385,y);
 
-              ctx.fillText("ENE",500,y);
-              ctx.fillText(`${wave[i].toFixed(1)} ft`,620,y);
-              ctx.fillText(`${period[i].toFixed(1)} s`,740,y);
+              ctx.fillText("ENE",520,y);
+              ctx.fillText(`${wave[i].toFixed(1)} ft`,640,y);
+              ctx.fillText(`${period[i].toFixed(1)} s`,760,y);
 
               ctx.fillStyle=hazardColor(wind[i],wave[i]);
-              ctx.beginPath();ctx.arc(860,y-8,8,0,Math.PI*2);ctx.fill();
+              ctx.beginPath();ctx.arc(880,y-8,8,0,Math.PI*2);ctx.fill();
 
               y+=38;
             });
 
-            // BUOY
+            // BUOY SECTION
             y+=30;
             ctx.strokeStyle="#cbd5f5";
-            ctx.beginPath();ctx.moveTo(100,y);ctx.lineTo(980,y);ctx.stroke();
-            y+=35;
+            ctx.beginPath();ctx.moveTo(120,y);ctx.lineTo(960,y);ctx.stroke();
+            y+=40;
 
             ctx.font="bold 22px system-ui";
             ctx.fillText("📡 Latest Buoy Conditions",540,y);
-            y+=30;
+            y+=36;
 
             ctx.font="20px system-ui";
-            [["41043",b43],["41056",b56]].forEach(([id,b])=>{
-              ctx.fillStyle="#0f172a";
-              ctx.fillText(id,260,y);
-              ctx.fillText(`${b.seas} ft`,420,y);
-              ctx.fillText(`${b.period} s`,560,y);
-              ctx.fillText(`${b.dir}°`,700,y);
-              y+=34;
-            });
+            ctx.fillStyle="#0f172a";
+
+            ctx.fillText("41043-North of PR",320,y);
+            ctx.fillText(`${b43.seas} ft`,560,y);
+            ctx.fillText(`${b43.period} s`,700,y);
+            ctx.fillText(`${b43.dir}°`,820,y);
+
+            y+=34;
+
+            ctx.fillText("41056-Near Vieques",320,y);
+            ctx.fillText(`${b56.seas} ft`,560,y);
+            ctx.fillText(`${b56.period} s`,700,y);
+            ctx.fillText(`${b56.dir}°`,820,y);
 
             // FOOTER
             ctx.font="18px system-ui";
@@ -159,7 +168,6 @@ jobs:
               540,
               1030
             );
-            ctx.textAlign="left";
           }
 
           run();
@@ -169,11 +177,10 @@ jobs:
 
       - name: Commit & Push
         run: |
-          set -e
-          git config user.email "action@github.com"
           git config user.name "GitHub Action"
+          git config user.email "action@github.com"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Add color-coded wind cells, hazard dots, header/footer updates"
+          git diff --staged --quiet || git commit -m "Fix header/logo spacing and buoy labels"
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
