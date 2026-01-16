@@ -16,7 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
@@ -42,9 +41,6 @@ jobs:
           const now = new Date();
           const ast = new Date(now.toLocaleString("en-US", { timeZone: "America/Puerto_Rico" }));
 
-          // -----------------------------
-          // Nearshore micro-grid
-          // -----------------------------
           const GRID_POINTS = [
             [18.05, -65.45],
             [18.10, -65.35],
@@ -124,9 +120,6 @@ jobs:
             fs.writeFileSync('rabirubia_7day_windwave.png', canvas.toBuffer());
           }
 
-          // -----------------------------
-          // Drawing helpers
-          // -----------------------------
           function compass(d){
             const dirs=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
             return dirs[Math.round(d/22.5)%16];
@@ -138,31 +131,36 @@ jobs:
             if(s<=25)return"#f97316";
             return"#ef4444";
           }
-          function dangerFlag(w,h){
-            if(w>25||h>6)return{color:"#ef4444"};
-            if(w>=15||h>=4)return{color:"#eab308"};
-            return{color:"#22c55e"};
-          }
 
           function drawCard(days,wave,period,wind,gust,dir,logo){
             ctx.fillStyle="#f8fafc";
             ctx.fillRect(0,0,1080,1080);
 
-            // LOGO — VERY CLEARLY SMALLER
             ctx.drawImage(logo,60,90,120,120);
 
-            // HEADER — SMALLER & MOVED LEFT
             ctx.font="bold 30px system-ui";
             ctx.fillStyle="#1e40af";
-            ctx.fillText(
-              "7-Day Nearshore East PR) Wind & Wave Forecast",
-              210,
-              150
-            );
+            ctx.fillText("7-Day Nearshore Wind & Wave Forecast",210,150);
 
-            let y=360;
+            // COLUMN HEADERS
+            ctx.font="bold 22px system-ui";
+            ctx.fillStyle="#334155";
+            const hy = 310;
+            ctx.fillText("Date",60,hy);
+            ctx.fillText("Wind",200,hy);
+            ctx.fillText("Gusts",320,hy);
+            ctx.fillText("Dir",440,hy);
+            ctx.fillText("Seas",560,hy);
+            ctx.fillText("Period",680,hy);
+
+            ctx.strokeStyle="#cbd5f5";
+            ctx.beginPath();
+            ctx.moveTo(60,325);
+            ctx.lineTo(960,325);
+            ctx.stroke();
+
+            let y=370;
             days.forEach((d,i)=>{
-              const flag=dangerFlag(wind[i],wave[i]);
               ctx.font="28px system-ui";
               ctx.fillStyle="#0f172a";
               ctx.fillText(new Date(d).toLocaleDateString('en-US',{weekday:'short'}),60,y);
@@ -173,19 +171,14 @@ jobs:
               ctx.fillText(compass(dir[i]),440,y);
               ctx.fillText(`${wave[i].toFixed(1)} ft`,560,y);
               ctx.fillText(`${period[i].toFixed(1)} s`,680,y);
-              ctx.fillStyle=flag.color;
-              ctx.beginPath();
-              ctx.arc(860,y-8,10,0,Math.PI*2);
-              ctx.fill();
               y+=70;
             });
 
-            // FOOTER — CENTERED & RAISED
             ctx.font="20px system-ui";
             ctx.fillStyle="#475569";
             ctx.textAlign="center";
             ctx.fillText(
-              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'})} AST • Rabirubia-Meteo Nearshore Blend`,
+              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'})} AST • Open-Meteo Nearshore Blend`,
               540,
               1000
             );
@@ -204,8 +197,7 @@ jobs:
           git config user.name "GitHub Action"
 
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Visible layout update: logo size, header fit, centered footer"
-
+          git diff --staged --quiet || git commit -m "Add visible column headers to forecast card"
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
