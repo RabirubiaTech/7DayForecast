@@ -148,16 +148,16 @@ jobs:
             ctx.fillStyle="#f8fafc";
             ctx.fillRect(0,0,1080,1080);
 
-            // Logo (reduced)
-            ctx.drawImage(logo,60,70,160,160);
+            // LOGO — VERY CLEARLY SMALLER
+            ctx.drawImage(logo,60,90,120,120);
 
-            // Header (smaller, fits safely)
-            ctx.font="bold 34px system-ui";
+            // HEADER — SMALLER & MOVED LEFT
+            ctx.font="bold 30px system-ui";
             ctx.fillStyle="#1e40af";
             ctx.fillText(
               "7-Day Nearshore Wind & Wave Forecast",
-              260,
-              155
+              210,
+              150
             );
 
             let y=360;
@@ -180,14 +180,14 @@ jobs:
               y+=70;
             });
 
-            // Footer (centered)
+            // FOOTER — CENTERED & RAISED
             ctx.font="20px system-ui";
             ctx.fillStyle="#475569";
             ctx.textAlign="center";
             ctx.fillText(
-              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit'})} AST • Open-Meteo Nearshore Blend`,
+              `Updated ${ast.toLocaleString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'})} AST • Open-Meteo Nearshore Blend`,
               540,
-              1020
+              1000
             );
             ctx.textAlign="left";
           }
@@ -204,7 +204,7 @@ jobs:
           git config user.name "GitHub Action"
 
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Layout refinement: logo, header, footer centering"
+          git diff --staged --quiet || git commit -m "Visible layout update: logo size, header fit, centered footer"
 
           git push origin main
         env:
