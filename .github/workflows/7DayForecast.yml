@@ -213,7 +213,7 @@ jobs:
             ctx.fillStyle="#475569";
             ctx.textAlign="center";
             ctx.fillText(
-              `Updated ${ast.toLocaleTimeString("en-US")} AST • Rabirubia-Meteo`,
+              `Updated ${ast.toLocaleTimeString("en-US")} AST • RabirubiaTech`,
               W/2,
               1010
             );
