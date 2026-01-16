@@ -138,7 +138,7 @@ jobs:
 
             ctx.drawImage(logo,60,90,120,120);
 
-            ctx.font="bold 30px system-ui";
+            ctx.font="bold 28px system-ui";
             ctx.fillStyle="#1e40af";
             ctx.fillText("7-Day Nearshore (East of PR) Wind & Wave Forecast",210,150);
 
