@@ -121,7 +121,7 @@ jobs:
             const dir=days.map(d=>circularMean(daily[d].dir));
 
             const logo=await loadImage("https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png");
-            ctx.drawImage(logo,W/2-230,90,70,70);
+            ctx.drawImage(logo,W/2-300,90,70,70);
 
             ctx.font="bold 22px system-ui";
             ctx.fillStyle="#1e40af";
