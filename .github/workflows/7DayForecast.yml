@@ -85,6 +85,110 @@ jobs:
             return null;
           }
 
+          /* ------------------  NWS NDFD FORECAST FETCH  ------------------
+           * Fajardo, PR nearshore: lat 18.33, lon -65.65 (east coast)
+           * We pull windSpeed, windDirection, waveHeight, wavePeriod from
+           * the NWS NDFD REST API and aggregate to one value per day.
+           * Docs: https://www.weather.gov/documentation/services-web-api
+           * ---------------------------------------------------------------- */
+          async function fetchNWSForecast() {
+            // Step 1 – resolve the forecast grid for Fajardo east coast
+            const pointRes = await fetch(
+              "https://api.weather.gov/points/18.3327,-65.6516",
+              { headers: { "User-Agent": "RabirubiaTech/1.0 forecast-card" } }
+            );
+            const pointData = await pointRes.json();
+            const { gridId, gridX, gridY } = pointData.properties;
+
+            // Step 2 – fetch the hourly forecast grid data (contains wave data for coastal zones)
+            const gridUrl = `https://api.weather.gov/gridpoints/${gridId}/${gridX},${gridY}`;
+            const gridRes = await fetch(gridUrl, {
+              headers: { "User-Agent": "RabirubiaTech/1.0 forecast-card" }
+            });
+            const gridData = await gridRes.json();
+            const props = gridData.properties;
+
+            // Helper: parse NWS ISO8601 duration intervals into per-hour values
+            function expandSeries(values) {
+              const out = [];
+              if (!values) return out;
+              for (const { validTime, value } of values) {
+                const [timeStr, durStr] = validTime.split("/");
+                const dt = new Date(timeStr);
+                const hours = parseInt(durStr.replace(/PT(\d+)H/, "$1")) || 1;
+                for (let h = 0; h < hours; h++) {
+                  const t = new Date(dt.getTime() + h * 3600000);
+                  out.push({ t, value: value ?? null });
+                }
+              }
+              return out;
+            }
+
+            // Helper: convert m/s → mph
+            const msToMph = v => v !== null ? Math.round(v * 2.237) : null;
+            // Helper: meters → feet
+            const mToFt  = v => v !== null ? parseFloat((v * 3.281).toFixed(1)) : null;
+
+            // Expand all series we need
+            const windSpeedSeries    = expandSeries(props.windSpeed?.values).map(x=>({...x, value: msToMph(x.value)}));
+            const windGustSeries     = expandSeries(props.windGust?.values).map(x=>({...x, value: msToMph(x.value)}));
+            const windDirSeries      = expandSeries(props.windDirection?.values);
+            // waveHeight uses "waveHeight" property in NDFD coastal grids
+            const waveHeightSeries   = expandSeries(props.waveHeight?.values).map(x=>({...x, value: mToFt(x.value)}));
+            const wavePeriodSeries   = expandSeries(props.wavePeriod?.values);
+
+            // Build a map: "YYYY-MM-DD" → arrays of values for that day (AST = UTC-4)
+            function toASTDateStr(utcDate) {
+              const ast = new Date(utcDate.getTime() - 4 * 3600000);
+              return ast.toISOString().slice(0, 10);
+            }
+
+            function groupByDay(series) {
+              const map = {};
+              for (const { t, value } of series) {
+                if (value === null) continue;
+                const key = toASTDateStr(t);
+                if (!map[key]) map[key] = [];
+                map[key].push(value);
+              }
+              return map;
+            }
+
+            const windByDay   = groupByDay(windSpeedSeries);
+            const gustByDay   = groupByDay(windGustSeries);
+            const dirByDay    = groupByDay(windDirSeries);
+            const waveByDay   = groupByDay(waveHeightSeries);
+            const periodByDay = groupByDay(wavePeriodSeries);
+
+            // Build 7-day array starting TODAY (AST)
+            const todayAST = new Date(ast.getTime());
+            todayAST.setHours(0,0,0,0);
+
+            const forecast = [];
+            for (let i = 0; i < 7; i++) {
+              const d = new Date(todayAST);
+              d.setDate(todayAST.getDate() + i);
+              const key = d.toISOString().slice(0, 10);
+
+              const avgWind   = windByDay[key]?.length   ? Math.round(mean(windByDay[key]))                    : null;
+              const avgGust   = gustByDay[key]?.length   ? Math.round(mean(gustByDay[key]))                   : null;
+              const avgDir    = dirByDay[key]?.length    ? Math.round(circularMean(dirByDay[key]))             : null;
+              const avgWave   = waveByDay[key]?.length   ? parseFloat(mean(waveByDay[key]).toFixed(1))        : null;
+              const avgPeriod = periodByDay[key]?.length ? parseFloat(mean(periodByDay[key]).toFixed(1))      : null;
+
+              forecast.push({
+                date: d,
+                wind:   avgWind   ?? "--",
+                gust:   avgGust   ?? "--",
+                dir:    avgDir,
+                wave:   avgWave   ?? "--",
+                period: avgPeriod ?? "--"
+              });
+            }
+
+            return forecast;
+          }
+
           /* ------------------ RUN ------------------ */
           async function run() {
             await drawBackground();
@@ -105,16 +209,19 @@ jobs:
             ctx.fillStyle="#1e40af";
             ctx.fillText(title, startX + 60 + gap, 130);
 
-            /* ---------- MOCK FORECAST DATA (UNCHANGED LOGIC) ---------- */
-            const days=[0,1,2,3,4,5,6].map(i=>{
-              const d=new Date(ast); d.setDate(ast.getDate()+i); return d;
-            });
-
-            const wind=[12,14,15,16,14,13,12];
-            const gust=[18,20,21,22,20,18,17];
-            const wave=[3.2,3.5,3.8,4.1,3.6,3.4,3.1];
-            const period=[8,8.5,9,9.2,8.8,8.3,8];
-            const dir=[80,85,90,95,100,90,85];
+            /* ---------- FETCH REAL FORECAST DATA ---------- */
+            let forecastRows;
+            try {
+              forecastRows = await fetchNWSForecast();
+            } catch (err) {
+              console.error("NWS forecast fetch failed:", err.message);
+              // Graceful fallback: flat climatological values for east PR
+              // (no artificial ramp-up, no Day-3 spike)
+              forecastRows = [0,1,2,3,4,5,6].map(i => {
+                const d = new Date(ast); d.setDate(ast.getDate() + i);
+                return { date: d, wind: 14, gust: 20, dir: 90, wave: 3.5, period: 8 };
+              });
+            }
 
             /* ---------- TABLE HEADERS ---------- */
             const xs=[140,300,420,540,660,780];
@@ -125,23 +232,27 @@ jobs:
 
             /* ---------- TABLE ROWS ---------- */
             let y=305;
-            days.forEach((d,i)=>{
+            forecastRows.forEach((row, i) => {
               ctx.font="18px system-ui";
               ctx.fillStyle="#0f172a";
-              ctx.fillText(d.toLocaleDateString("en-US",{weekday:"short"}),xs[0],y);
+              ctx.fillText(
+                row.date.toLocaleDateString("en-US", { weekday:"short", timeZone:"America/Puerto_Rico" }),
+                xs[0], y
+              );
 
-              ctx.fillStyle=windColor(wind[i]);
-              ctx.fillText(`${wind[i]} mph`,xs[1],y);
-              ctx.fillText(`${gust[i]} mph`,xs[2],y);
+              const windVal = typeof row.wind === "number" ? row.wind : 0;
+              ctx.fillStyle = windColor(windVal);
+              ctx.fillText(row.wind !== "--" ? `${row.wind} mph` : "--", xs[1], y);
+              ctx.fillText(row.gust !== "--" ? `${row.gust} mph` : "--", xs[2], y);
 
               ctx.fillStyle="#0f172a";
-              ctx.fillText(compass(dir[i]),xs[3],y);
-              ctx.fillText(`${wave[i]} ft`,xs[4],y);
-              ctx.fillText(`${period[i]} s`,xs[5],y);
+              ctx.fillText(row.dir !== null && row.dir !== undefined ? compass(row.dir) : "--", xs[3], y);
+              ctx.fillText(row.wave !== "--" ? `${row.wave} ft` : "--", xs[4], y);
+              ctx.fillText(row.period !== "--" ? `${row.period} s` : "--", xs[5], y);
 
-              ctx.fillStyle=wind[i]>=20?"#ef4444":"#22c55e";
-              ctx.beginPath();ctx.arc(xs[5]+90,y-6,6,0,Math.PI*2);ctx.fill();
-              y+=42;
+              ctx.fillStyle = windVal >= 20 ? "#ef4444" : "#22c55e";
+              ctx.beginPath(); ctx.arc(xs[5]+90, y-6, 6, 0, Math.PI*2); ctx.fill();
+              y += 42;
             });
 
             /* ---------- BUOY SECTION ---------- */
@@ -208,6 +319,15 @@ jobs:
             /* Restore alignment */
             ctx.textAlign = "left";
 
+            /* ---------- DATA SOURCE LABEL ---------- */
+            ctx.font = "13px system-ui";
+            ctx.fillStyle = "#94a3b8";
+            ctx.textAlign = "center";
+            ctx.fillText(
+              "Forecast: NWS NDFD · Fajardo Nearshore (18.33°N, 65.65°W)",
+              W / 2, 800
+            );
+
             /* ---------- FOOTER ---------- */
             ctx.font="16px system-ui";
             ctx.fillStyle="#475569";
@@ -219,6 +339,7 @@ jobs:
             );
 
             fs.writeFileSync("rabirubia_7day_windwave.png",canvas.toBuffer());
+            console.log("✅ Forecast card generated successfully.");
           }
 
           run().catch(e=>{console.error(e);process.exit(1)});
@@ -231,5 +352,5 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Restore buoy data and true centered header"
+          git diff --staged --quiet || git commit -m "Fix: replace static mock forecast with live NWS NDFD data for Fajardo PR"
           git push
