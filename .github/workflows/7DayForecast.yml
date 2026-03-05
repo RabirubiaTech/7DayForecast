@@ -34,27 +34,55 @@ jobs:
           const canvas = createCanvas(W, H);
           const ctx = canvas.getContext("2d");
 
-          // Current time in AST (UTC-4)
-          const now = new Date();
-          const ast = new Date(now.toLocaleString("en-US", { timeZone: "America/Puerto_Rico" }));
+          // AST = UTC-4
+          const now       = new Date();
+          const astOffset = -4 * 60 * 60 * 1000;
+          const astNow    = new Date(now.getTime() + astOffset);
 
-          /* ------------------ HELPERS ------------------ */
-          const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
-          const circularMean = d => {
-            const r = d.map(v => v * Math.PI / 180);
-            return (Math.atan2(
-              r.reduce((a,v) => a+Math.sin(v), 0),
-              r.reduce((a,v) => a+Math.cos(v), 0)
-            ) * 180 / Math.PI + 360) % 360;
+          /* ── helpers ─────────────────────────────────────────────── */
+          const mean = arr => arr.reduce((a,b)=>a+b,0)/arr.length;
+
+          const circularMean = degs => {
+            const rad = degs.map(d => d * Math.PI / 180);
+            const ang = Math.atan2(
+              rad.reduce((a,v)=>a+Math.sin(v),0),
+              rad.reduce((a,v)=>a+Math.cos(v),0)
+            ) * 180 / Math.PI;
+            return (ang + 360) % 360;
           };
-          const compass = d => {
-            const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
-            return dirs[Math.round(d / 22.5) % 16];
+
+          const compass = deg => {
+            const d=["N","NNE","NE","ENE","E","ESE","SE","SSE",
+                     "S","SSW","SW","WSW","W","WNW","NW","NNW"];
+            return d[Math.round(deg/22.5)%16];
           };
+
           const windColor = s =>
-            s <= 10 ? "#38bdf8" : s <= 15 ? "#22c55e" : s <= 20 ? "#eab308" : s <= 25 ? "#f97316" : "#ef4444";
+            s<=10?"#38bdf8":s<=15?"#22c55e":s<=20?"#eab308":s<=25?"#f97316":"#ef4444";
 
-          /* ------------------ BACKGROUND ------------------ */
+          /* ── unit conversion – reads uom returned by NWS ─────────── */
+          function toMph(value, uom) {
+            if (value === null || value === undefined) return null;
+            // uom examples: "wmoUnit:km_h-1"  "wmoUnit:m_s-1"
+            //               "wmoUnit:knot"    "wmoUnit:mph"
+            const u = (uom || "").toLowerCase();
+            if (u.includes("km_h")  || u.includes("km/h")) return Math.round(value * 0.621371);
+            if (u.includes("m_s")   || u.includes("m/s"))  return Math.round(value * 2.23694);
+            if (u.includes("knot")  || u.includes("kt"))   return Math.round(value * 1.15078);
+            if (u.includes("mph"))                          return Math.round(value);
+            // fallback – assume km/h (most common for NWS)
+            return Math.round(value * 0.621371);
+          }
+
+          function toFeet(value, uom) {
+            if (value === null || value === undefined) return null;
+            const u = (uom || "").toLowerCase();
+            if (u.includes("ft") || u.includes("feet")) return parseFloat(value.toFixed(1));
+            // assume metres
+            return parseFloat((value * 3.28084).toFixed(1));
+          }
+
+          /* ── background ──────────────────────────────────────────── */
           async function drawBackground() {
             const bg = await loadImage(
               "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1600&q=80"
@@ -64,286 +92,292 @@ jobs:
             ctx.fillRect(40, 40, W-80, H-80);
           }
 
-          /* ------------------ BUOY FETCH ------------------ */
+          /* ── buoy fetch ──────────────────────────────────────────── */
           async function fetchBuoy(id) {
-            const txt = await fetch(`https://www.ndbc.noaa.gov/data/realtime2/${id}.txt`).then(r => r.text());
-            const lines = txt.split("\n");
-            const header = lines.find(l => l.startsWith("#YY")).replace("#","").split(/\s+/);
-            const rows = lines.filter(l => !l.startsWith("#") && l.trim());
-            const idx = n => header.indexOf(n);
-            for (const r of rows) {
-              const p = r.split(/\s+/);
-              if (p[idx("WVHT")] !== "MM") {
-                return {
-                  height: (parseFloat(p[idx("WVHT")]) * 3.281).toFixed(1) + " ft",
-                  period: p[idx("DPD")] + " s",
-                  dir: p[idx("MWD")] + "°"
-                };
+            try {
+              const txt = await fetch(
+                `https://www.ndbc.noaa.gov/data/realtime2/${id}.txt`
+              ).then(r => r.text());
+              const lines  = txt.split("\n");
+              const header = lines.find(l=>l.startsWith("#YY"))
+                                  .replace("#","").split(/\s+/);
+              const rows   = lines.filter(l=>!l.startsWith("#") && l.trim());
+              const idx    = n => header.indexOf(n);
+              for (const r of rows) {
+                const p = r.split(/\s+/);
+                if (p[idx("WVHT")] !== "MM") {
+                  return {
+                    height: (parseFloat(p[idx("WVHT")]) * 3.28084).toFixed(1) + " ft",
+                    period: p[idx("DPD")] + " s",
+                    dir:    p[idx("MWD")] + "°"
+                  };
+                }
               }
-            }
+            } catch(e) { console.error("Buoy",id,"error:",e.message); }
             return null;
           }
 
-          /* ------------------  NWS NDFD FORECAST  ------------------
-           * Fajardo nearshore east coast: 18.3327°N, 65.6516°W
-           *
-           * UNIT NOTES (NWS API returns these units):
-           *   windSpeed / windGust  → km_h-1  (kilometers per hour)
-           *   waveHeight            → m        (meters)
-           *   wavePeriod            → s        (seconds, already correct)
-           *   windDirection         → degrees  (already correct)
-           *
-           * PROPERTY NAMES in gridpoints response:
-           *   windSpeed, windGust, windDirection  → standard met params
-           *   waveHeight                          → named "waveHeight"
-           *   wavePeriod                          → named "wavePeriod2" (dominant)
-           * --------------------------------------------------------- */
-          async function fetchNWSForecast() {
-
-            // Step 1 – resolve grid for Fajardo east coast
-            const pointRes = await fetch(
-              "https://api.weather.gov/points/18.3327,-65.6516",
-              { headers: { "User-Agent": "RabirubiaTech/1.0 (forecast-card)" } }
-            );
-            if (!pointRes.ok) throw new Error(`Points API ${pointRes.status}`);
-            const pointData = await pointRes.json();
-            const { gridId, gridX, gridY } = pointData.properties;
-            console.log(`Grid: ${gridId} ${gridX},${gridY}`);
-
-            // Step 2 – fetch gridpoint data
-            const gridUrl = `https://api.weather.gov/gridpoints/${gridId}/${gridX},${gridY}`;
-            const gridRes = await fetch(gridUrl, {
-              headers: { "User-Agent": "RabirubiaTech/1.0 (forecast-card)" }
-            });
-            if (!gridRes.ok) throw new Error(`Gridpoints API ${gridRes.status}`);
-            const gridData = await gridRes.json();
-            const props = gridData.properties;
-
-            // Log available wave-related keys for debugging
-            const waveKeys = Object.keys(props).filter(k => k.toLowerCase().includes("wave") || k.toLowerCase().includes("swell"));
-            console.log("Wave-related keys:", waveKeys);
-
-            // Step 3 – expand ISO8601 duration series → hourly array
-            function expandSeries(valuesArr) {
-              const out = [];
-              if (!valuesArr || !valuesArr.length) return out;
-              for (const { validTime, value } of valuesArr) {
-                const [timeStr, durStr] = validTime.split("/");
-                const dt = new Date(timeStr);
-                const match = durStr.match(/PT(\d+)H/);
-                const hours = match ? parseInt(match[1]) : 1;
-                for (let h = 0; h < hours; h++) {
-                  out.push({ t: new Date(dt.getTime() + h * 3600000), value: value ?? null });
-                }
+          /* ── expand NWS ISO-8601 duration series → hourly ─────────
+           *  validTime format: "2025-03-05T12:00:00+00:00/PT6H"
+           * ────────────────────────────────────────────────────────── */
+          function expandSeries(values) {
+            const out = [];
+            if (!values || !values.length) return out;
+            for (const { validTime, value } of values) {
+              const slash = validTime.lastIndexOf("/");
+              const timeStr = validTime.slice(0, slash);
+              const durStr  = validTime.slice(slash + 1);
+              const dt      = new Date(timeStr);
+              // parse PT#H or PT#DT#H
+              const hours   = (() => {
+                let h = 0;
+                const dMatch = durStr.match(/(\d+)D/); if (dMatch) h += parseInt(dMatch[1])*24;
+                const hMatch = durStr.match(/(\d+)H/); if (hMatch) h += parseInt(hMatch[1]);
+                return h || 1;
+              })();
+              for (let i = 0; i < hours; i++) {
+                out.push({ t: new Date(dt.getTime() + i*3600000), value });
               }
-              return out;
             }
-
-            // Unit conversions
-            // NWS windSpeed is in km/h → convert to mph
-            const kmhToMph = v => v !== null ? Math.round(v * 0.621371) : null;
-            // NWS waveHeight is in meters → convert to feet
-            const mToFt    = v => v !== null ? parseFloat((v * 3.281).toFixed(1)) : null;
-
-            const windSpeedSeries  = expandSeries(props.windSpeed?.values).map(x => ({ ...x, value: kmhToMph(x.value) }));
-            const windGustSeries   = expandSeries(props.windGust?.values).map(x => ({ ...x, value: kmhToMph(x.value) }));
-            const windDirSeries    = expandSeries(props.windDirection?.values);
-
-            // Try all known NWS property names for wave height and period
-            const waveHeightRaw  = props.waveHeight?.values
-                                || props.significantWaveHeight?.values
-                                || props.windWaveHeight?.values
-                                || [];
-            const wavePeriodRaw  = props.wavePeriod2?.values
-                                || props.wavePeriod?.values
-                                || props.dominantWavePeriod?.values
-                                || [];
-
-            const waveHeightSeries = expandSeries(waveHeightRaw).map(x => ({ ...x, value: mToFt(x.value) }));
-            const wavePeriodSeries = expandSeries(wavePeriodRaw);
-
-            console.log(`Wind series points: ${windSpeedSeries.length}`);
-            console.log(`Wave height points: ${waveHeightSeries.length}`);
-            console.log(`Wave period points: ${wavePeriodSeries.length}`);
-
-            // Step 4 – group values by AST calendar date ("YYYY-MM-DD")
-            function toASTDateStr(utcDate) {
-              // AST = UTC - 4h
-              const d = new Date(utcDate.getTime() - 4 * 3600000);
-              return d.toISOString().slice(0, 10);
-            }
-
-            function groupByDay(series) {
-              const map = {};
-              for (const { t, value } of series) {
-                if (value === null || isNaN(value)) continue;
-                const key = toASTDateStr(t);
-                if (!map[key]) map[key] = [];
-                map[key].push(value);
-              }
-              return map;
-            }
-
-            const windByDay   = groupByDay(windSpeedSeries);
-            const gustByDay   = groupByDay(windGustSeries);
-            const dirByDay    = groupByDay(windDirSeries);
-            const waveByDay   = groupByDay(waveHeightSeries);
-            const periodByDay = groupByDay(wavePeriodSeries);
-
-            // Step 5 – build 7-day array starting TODAY in AST
-            // Use midnight AST as anchor to avoid timezone drift
-            const todayKey = toASTDateStr(now);   // "YYYY-MM-DD" in AST
-            const todayMidnightAST = new Date(todayKey + "T04:00:00Z"); // midnight AST = 04:00 UTC
-
-            const forecast = [];
-            for (let i = 0; i < 7; i++) {
-              const d = new Date(todayMidnightAST.getTime() + i * 86400000);
-              const key = toASTDateStr(d);
-
-              const avgWind   = windByDay[key]?.length   ? Math.round(mean(windByDay[key]))                : null;
-              const avgGust   = gustByDay[key]?.length   ? Math.round(mean(gustByDay[key]))               : null;
-              const avgDir    = dirByDay[key]?.length    ? Math.round(circularMean(dirByDay[key]))         : null;
-              const avgWave   = waveByDay[key]?.length   ? parseFloat(mean(waveByDay[key]).toFixed(1))    : null;
-              const avgPeriod = periodByDay[key]?.length ? parseFloat(mean(periodByDay[key]).toFixed(1))  : null;
-
-              console.log(`${key}: wind=${avgWind} gust=${avgGust} dir=${avgDir} wave=${avgWave} period=${avgPeriod}`);
-
-              forecast.push({ date: d, wind: avgWind, gust: avgGust, dir: avgDir, wave: avgWave, period: avgPeriod });
-            }
-
-            return forecast;
+            return out;
           }
 
-          /* ------------------ RUN ------------------ */
+          /* ── group hourly points by AST calendar date ─────────────
+           *  Returns { "YYYY-MM-DD": [values…] }
+           * ────────────────────────────────────────────────────────── */
+          function groupByASTDate(hourly) {
+            const map = {};
+            for (const { t, value } of hourly) {
+              if (value === null || value === undefined || isNaN(value)) continue;
+              const astDate = new Date(t.getTime() + astOffset);
+              const key = astDate.toISOString().slice(0, 10);   // "YYYY-MM-DD"
+              (map[key] = map[key] || []).push(value);
+            }
+            return map;
+          }
+
+          /* ── NWS NDFD forecast for Fajardo nearshore ─────────────
+           *  Coordinates: 18.3327 N, 65.6516 W  (east coast PR)
+           * ────────────────────────────────────────────────────────── */
+          async function fetchNWSForecast() {
+            const UA = "RabirubiaTech/1.0 (forecast-card; contact@rabirubia.tech)";
+
+            // 1. Resolve grid
+            const ptRes = await fetch(
+              "https://api.weather.gov/points/18.3327,-65.6516",
+              { headers: { "User-Agent": UA } }
+            );
+            if (!ptRes.ok) throw new Error(`/points ${ptRes.status}: ${await ptRes.text()}`);
+            const pt = await ptRes.json();
+            const { gridId, gridX, gridY } = pt.properties;
+            console.log(`Grid → ${gridId} ${gridX},${gridY}`);
+
+            // 2. Fetch raw grid data
+            const gdRes = await fetch(
+              `https://api.weather.gov/gridpoints/${gridId}/${gridX},${gridY}`,
+              { headers: { "User-Agent": UA } }
+            );
+            if (!gdRes.ok) throw new Error(`/gridpoints ${gdRes.status}: ${await gdRes.text()}`);
+            const gd   = await gdRes.json();
+            const p    = gd.properties;
+
+            // Log what wave-related fields are actually present
+            const presentWaveKeys = ["waveHeight","wavePeriod","wavePeriod2",
+              "waveDirection","windWaveHeight","primarySwellHeight",
+              "primarySwellDirection","secondarySwellHeight"]
+              .filter(k => p[k]?.values?.length > 0);
+            console.log("Present wave keys:", presentWaveKeys);
+            console.log("windSpeed uom:", p.windSpeed?.uom);
+            console.log("waveHeight uom:", p.waveHeight?.uom);
+
+            // 3. Extract with correct uom-aware conversion
+            const windUom  = p.windSpeed?.uom  || "";
+            const gustUom  = p.windGust?.uom   || "";
+            const waveUom  = p.waveHeight?.uom || "";
+
+            const windH  = expandSeries(p.windSpeed?.values)
+                             .map(x=>({...x, value: toMph(x.value, windUom)}));
+            const gustH  = expandSeries(p.windGust?.values)
+                             .map(x=>({...x, value: toMph(x.value, gustUom)}));
+            const dirH   = expandSeries(p.windDirection?.values);
+
+            // waveHeight – try in order of preference
+            const rawWave = p.waveHeight?.values?.length   ? p.waveHeight
+                          : p.windWaveHeight?.values?.length? p.windWaveHeight
+                          : null;
+            const wvUom   = rawWave?.uom || "";
+            const waveH   = expandSeries(rawWave?.values)
+                              .map(x=>({...x, value: toFeet(x.value, wvUom)}));
+
+            // wavePeriod – dominant period preferred
+            const rawPer  = p.wavePeriod2?.values?.length ? p.wavePeriod2
+                          : p.wavePeriod?.values?.length  ? p.wavePeriod
+                          : null;
+            const perH    = expandSeries(rawPer?.values);
+
+            console.log(`Wind pts:${windH.length}  Gust:${gustH.length}  Wave:${waveH.length}  Period:${perH.length}`);
+
+            // 4. Group by AST calendar date
+            const windDay  = groupByASTDate(windH);
+            const gustDay  = groupByASTDate(gustH);
+            const dirDay   = groupByASTDate(dirH);
+            const waveDay  = groupByASTDate(waveH);
+            const perDay   = groupByASTDate(perH);
+
+            // 5. Build 7-day array – anchor = today in AST
+            const todayAST = astNow.toISOString().slice(0,10);  // "YYYY-MM-DD"
+            const anchor   = new Date(todayAST + "T00:00:00+00:00");
+
+            const rows = [];
+            for (let i = 0; i < 7; i++) {
+              const dayUTC = new Date(anchor.getTime() + i*86400000);
+              // The AST date key: subtract 4h from UTC midnight then format
+              const key = new Date(dayUTC.getTime() - astOffset)
+                            .toISOString().slice(0,10);
+              // Actually since anchor is at UTC midnight and AST=UTC-4,
+              // the AST date for UTC midnight = previous calendar day.
+              // Correct approach: step through AST dates directly.
+              const astDay = new Date(astNow);
+              astDay.setUTCHours(0,0,0,0);
+              const keyFixed = new Date(astDay.getTime() + i*86400000 - astOffset)
+                                 .toISOString().slice(0,10);
+
+              const displayDate = new Date(astNow);
+              displayDate.setDate(astNow.getDate() + i);
+
+              const avgWind   = windDay[keyFixed]?.length
+                ? Math.round(mean(windDay[keyFixed])) : null;
+              const avgGust   = gustDay[keyFixed]?.length
+                ? Math.round(mean(gustDay[keyFixed])) : null;
+              const avgDir    = dirDay[keyFixed]?.length
+                ? Math.round(circularMean(dirDay[keyFixed])) : null;
+              const avgWave   = waveDay[keyFixed]?.length
+                ? parseFloat(mean(waveDay[keyFixed]).toFixed(1)) : null;
+              const avgPer    = perDay[keyFixed]?.length
+                ? parseFloat(mean(perDay[keyFixed]).toFixed(1)) : null;
+
+              console.log(`${keyFixed}: wind=${avgWind}mph gust=${avgGust}mph dir=${avgDir}° wave=${avgWave}ft per=${avgPer}s`);
+              rows.push({ date: displayDate, wind: avgWind, gust: avgGust,
+                          dir: avgDir, wave: avgWave, period: avgPer });
+            }
+            return rows;
+          }
+
+          /* ── main ─────────────────────────────────────────────────── */
           async function run() {
             await drawBackground();
 
-            /* ---------- HEADER ---------- */
+            /* header */
             const logo = await loadImage(
               "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png"
             );
-            const title = "7-Day Nearshore (East of PR) Wind & Wave Forecast";
-            ctx.font = "bold 22px system-ui";
-            const textWidth = ctx.measureText(title).width;
-            const gap = 16;
-            const totalWidth = 60 + gap + textWidth;
-            const startX = (W - totalWidth) / 2;
+            const title   = "7-Day Nearshore (East of PR) Wind & Wave Forecast";
+            ctx.font      = "bold 22px system-ui";
+            const tw      = ctx.measureText(title).width;
+            const startX  = (W - (60 + 16 + tw)) / 2;
             ctx.drawImage(logo, startX, 90, 60, 60);
             ctx.fillStyle = "#1e40af";
-            ctx.fillText(title, startX + 60 + gap, 130);
+            ctx.fillText(title, startX + 76, 130);
 
-            /* ---------- FETCH FORECAST ---------- */
-            let forecastRows;
+            /* fetch real forecast */
+            let rows;
             try {
-              forecastRows = await fetchNWSForecast();
-            } catch (err) {
-              console.error("NWS fetch failed:", err.message);
-              // Flat climatological fallback for east PR (no artificial spike)
-              forecastRows = [0,1,2,3,4,5,6].map(i => {
-                const d = new Date(now.getTime() + i * 86400000);
-                return { date: d, wind: 14, gust: 20, dir: 90, wave: 3.2, period: 8 };
+              rows = await fetchNWSForecast();
+            } catch(err) {
+              console.error("NWS fetch failed →", err.message);
+              // Flat east-PR climatological fallback (no artificial spike)
+              rows = Array.from({length:7},(_,i)=>{
+                const d = new Date(astNow); d.setDate(astNow.getDate()+i);
+                return { date:d, wind:14, gust:20, dir:90, wave:3.2, period:8 };
               });
             }
 
-            /* ---------- TABLE HEADERS ---------- */
+            /* table headers */
             const xs = [140, 300, 420, 540, 660, 780];
-            ctx.font = "bold 18px system-ui";
+            ctx.font      = "bold 18px system-ui";
             ctx.fillStyle = "#334155";
             ["📅 Date","💨 Wind","🌬 Gusts","🧭 Dir","🌊 Seas","⏱ Period"]
-              .forEach((h, i) => ctx.fillText(h, xs[i], 260));
+              .forEach((h,i) => ctx.fillText(h, xs[i], 260));
 
-            /* ---------- TABLE ROWS ---------- */
+            /* table rows */
             let y = 305;
-            forecastRows.forEach((row) => {
-              // Date label in AST
-              const label = new Date(row.date.getTime() + 4 * 3600000)
-                .toLocaleDateString("en-US", { weekday: "short" });
+            rows.forEach(row => {
+              const label = row.date.toLocaleDateString("en-US",
+                { weekday:"short", timeZone:"America/Puerto_Rico" });
 
-              ctx.font = "18px system-ui";
+              ctx.font      = "18px system-ui";
               ctx.fillStyle = "#0f172a";
               ctx.fillText(label, xs[0], y);
 
-              const windVal = row.wind ?? 0;
-              ctx.fillStyle = windColor(windVal);
-              ctx.fillText(row.wind  != null ? `${row.wind} mph`  : "--", xs[1], y);
-              ctx.fillText(row.gust  != null ? `${row.gust} mph`  : "--", xs[2], y);
-
+              const wv = row.wind ?? 0;
+              ctx.fillStyle = windColor(wv);
+              ctx.fillText(row.wind   != null ? `${row.wind} mph`   : "--", xs[1], y);
+              ctx.fillText(row.gust   != null ? `${row.gust} mph`   : "--", xs[2], y);
               ctx.fillStyle = "#0f172a";
-              ctx.fillText(row.dir   != null ? compass(row.dir)   : "--", xs[3], y);
-              ctx.fillText(row.wave  != null ? `${row.wave} ft`   : "--", xs[4], y);
-              ctx.fillText(row.period!= null ? `${row.period} s`  : "--", xs[5], y);
+              ctx.fillText(row.dir    != null ? compass(row.dir)    : "--", xs[3], y);
+              ctx.fillText(row.wave   != null ? `${row.wave} ft`    : "--", xs[4], y);
+              ctx.fillText(row.period != null ? `${row.period} s`   : "--", xs[5], y);
 
-              ctx.fillStyle = windVal >= 20 ? "#ef4444" : "#22c55e";
+              ctx.fillStyle = wv >= 20 ? "#ef4444" : "#22c55e";
               ctx.beginPath(); ctx.arc(xs[5]+90, y-6, 6, 0, Math.PI*2); ctx.fill();
               y += 42;
             });
 
-            /* ---------- BUOY SECTION ---------- */
-            const buoy43 = await fetchBuoy("41043");
-            const buoy56 = await fetchBuoy("41056");
+            /* buoy section */
+            const [buoy43, buoy56] = await Promise.all([
+              fetchBuoy("41043"), fetchBuoy("41056")
+            ]);
 
-            const buoyY = 640, buoyW = 720, buoyH = 130;
-            const buoyX = (W - buoyW) / 2;
-            const colW  = buoyW / 2;
+            const bY=640, bW=720, bH=130, bX=(W-720)/2, cW=360;
+            ctx.textAlign  = "center";
+            ctx.font       = "bold 18px system-ui";
+            ctx.fillStyle  = "#1e293b";
+            ctx.fillText("📍 NOAA Buoy Observations", W/2, bY-15);
 
-            ctx.textAlign = "center";
-            ctx.font = "bold 18px system-ui";
-            ctx.fillStyle = "#1e293b";
-            ctx.fillText("📍 NOAA Buoy Observations", W/2, buoyY - 15);
+            ctx.fillStyle  = "#f8fafc";
+            ctx.strokeStyle= "#cbd5e1";
+            ctx.lineWidth  = 2;
+            ctx.beginPath(); ctx.roundRect(bX,bY,bW,bH,14); ctx.fill(); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bX+cW,bY); ctx.lineTo(bX+cW,bY+bH); ctx.stroke();
 
-            ctx.fillStyle = "#f8fafc";
-            ctx.strokeStyle = "#cbd5e1";
-            ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.roundRect(buoyX, buoyY, buoyW, buoyH, 14); ctx.fill(); ctx.stroke();
-
-            ctx.beginPath();
-            ctx.moveTo(buoyX + colW, buoyY);
-            ctx.lineTo(buoyX + colW, buoyY + buoyH);
-            ctx.stroke();
-
-            const buoyColor = h => {
+            const bColor = h => {
               if (!h) return "#e5e7eb";
               const v = parseFloat(h);
-              return v <= 3 ? "#22c55e" : v <= 5 ? "#eab308" : "#ef4444";
+              return v<=3?"#22c55e":v<=5?"#eab308":"#ef4444";
             };
 
-            ctx.font = "bold 16px system-ui";
-            ctx.fillStyle = buoyColor(buoy43?.height);
-            ctx.fillText("41043 – North of PR", buoyX + colW/2, buoyY + 30);
-            ctx.font = "15px system-ui"; ctx.fillStyle = "#0f172a";
-            ctx.fillText(`Seas: ${buoy43?.height ?? "--"}`,   buoyX + colW/2, buoyY + 58);
-            ctx.fillText(`Period: ${buoy43?.period ?? "--"}`, buoyX + colW/2, buoyY + 80);
-            ctx.fillText(`Dir: ${buoy43?.dir ?? "--"}`,       buoyX + colW/2, buoyY + 102);
+            // Left buoy
+            ctx.font="bold 16px system-ui"; ctx.fillStyle=bColor(buoy43?.height);
+            ctx.fillText("41043 – North of PR",  bX+cW/2, bY+30);
+            ctx.font="15px system-ui"; ctx.fillStyle="#0f172a";
+            ctx.fillText(`Seas: ${buoy43?.height??"--"}`,   bX+cW/2, bY+58);
+            ctx.fillText(`Period: ${buoy43?.period??"--"}`, bX+cW/2, bY+80);
+            ctx.fillText(`Dir: ${buoy43?.dir??"--"}`,       bX+cW/2, bY+102);
 
-            ctx.font = "bold 16px system-ui";
-            ctx.fillStyle = buoyColor(buoy56?.height);
-            ctx.fillText("41056 – Near Vieques", buoyX + colW + colW/2, buoyY + 30);
-            ctx.font = "15px system-ui"; ctx.fillStyle = "#0f172a";
-            ctx.fillText(`Seas: ${buoy56?.height ?? "--"}`,   buoyX + colW + colW/2, buoyY + 58);
-            ctx.fillText(`Period: ${buoy56?.period ?? "--"}`, buoyX + colW + colW/2, buoyY + 80);
-            ctx.fillText(`Dir: ${buoy56?.dir ?? "--"}`,       buoyX + colW + colW/2, buoyY + 102);
+            // Right buoy
+            ctx.font="bold 16px system-ui"; ctx.fillStyle=bColor(buoy56?.height);
+            ctx.fillText("41056 – Near Vieques", bX+cW+cW/2, bY+30);
+            ctx.font="15px system-ui"; ctx.fillStyle="#0f172a";
+            ctx.fillText(`Seas: ${buoy56?.height??"--"}`,   bX+cW+cW/2, bY+58);
+            ctx.fillText(`Period: ${buoy56?.period??"--"}`, bX+cW+cW/2, bY+80);
+            ctx.fillText(`Dir: ${buoy56?.dir??"--"}`,       bX+cW+cW/2, bY+102);
 
             ctx.textAlign = "left";
 
-            /* ---------- SOURCE LABEL ---------- */
-            ctx.font = "13px system-ui";
-            ctx.fillStyle = "#94a3b8";
-            ctx.textAlign = "center";
+            /* source + footer */
+            ctx.font="13px system-ui"; ctx.fillStyle="#94a3b8"; ctx.textAlign="center";
             ctx.fillText("Forecast: NWS NDFD · Fajardo Nearshore (18.33°N, 65.65°W)", W/2, 800);
 
-            /* ---------- FOOTER ---------- */
-            ctx.font = "16px system-ui";
-            ctx.fillStyle = "#475569";
-            ctx.fillText(
-              `Updated ${ast.toLocaleTimeString("en-US")} AST • RabirubiaTech`,
-              W/2, 1010
-            );
+            ctx.font="16px system-ui"; ctx.fillStyle="#475569";
+            const astStr = astNow.toLocaleTimeString("en-US",
+              { hour:"2-digit", minute:"2-digit", timeZone:"America/Puerto_Rico" });
+            ctx.fillText(`Updated ${astStr} AST • RabirubiaTech`, W/2, 1010);
 
             fs.writeFileSync("rabirubia_7day_windwave.png", canvas.toBuffer());
-            console.log("✅ Card saved.");
+            console.log("✅ Card saved successfully.");
           }
 
-          run().catch(e => { console.error(e); process.exit(1); });
+          run().catch(e => { console.error("FATAL:", e); process.exit(1); });
           EOF
 
           node generate.cjs
@@ -353,5 +387,5 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Fix: correct unit conversions, wave property names, AST date anchor"
+          git diff --staged --quiet || git commit -m "Fix: dynamic uom conversion, correct wave keys, AST date anchor"
           git push
