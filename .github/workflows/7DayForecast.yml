@@ -37,9 +37,10 @@ jobs:
           // AST = UTC-4
           const now       = new Date();
           const astOffset = -4 * 60 * 60 * 1000;
-          const astNow    = new Date(now.getTime() - astOffset); // local AST time
+          // astNow = current wall-clock time in AST
+          const astNow    = new Date(now.getTime() + astOffset);
 
-          /* ── helpers ─────────────────────────────────────────────── */
+          /* ── helpers ─────────────────────────────────────────── */
           const mean = arr => arr.reduce((a,b) => a+b, 0) / arr.length;
 
           const circularMean = degs => {
@@ -61,7 +62,7 @@ jobs:
             s <= 10 ? "#38bdf8" : s <= 15 ? "#22c55e" :
             s <= 20 ? "#eab308" : s <= 25 ? "#f97316" : "#ef4444";
 
-          /* ── unit conversion using actual uom from NWS ───────────── */
+          /* ── unit conversion (reads actual uom from NWS) ─────── */
           function toMph(value, uom) {
             if (value === null || value === undefined) return null;
             const u = (uom || "").toLowerCase();
@@ -69,10 +70,10 @@ jobs:
             if (u.includes("m_s")  || u.includes("m/s"))   return Math.round(value * 2.23694);
             if (u.includes("knot") || u.includes("kt"))    return Math.round(value * 1.15078);
             if (u.includes("mph"))                          return Math.round(value);
-            return Math.round(value * 0.621371); // default: km/h
+            return Math.round(value * 0.621371); // safest default
           }
 
-          /* ── background ──────────────────────────────────────────── */
+          /* ── background ──────────────────────────────────────── */
           async function drawBackground() {
             const bg = await loadImage(
               "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1600&q=80"
@@ -82,7 +83,7 @@ jobs:
             ctx.fillRect(40, 40, W-80, H-80);
           }
 
-          /* ── buoy fetch ──────────────────────────────────────────── */
+          /* ── buoy fetch ──────────────────────────────────────── */
           async function fetchBuoy(id) {
             try {
               const txt = await fetch(
@@ -107,7 +108,7 @@ jobs:
             return null;
           }
 
-          /* ── expand NWS ISO-8601 duration series → hourly ────────── */
+          /* ── expand NWS ISO-8601 duration series → hourly ────── */
           function expandSeries(values) {
             const out = [];
             if (!values || !values.length) return out;
@@ -127,33 +128,31 @@ jobs:
             return out;
           }
 
-          /* ── group hourly → AST calendar date ───────────────────── */
+          /* ── group hourly → AST calendar date key ────────────── */
           function groupByASTDate(hourly) {
             const map = {};
             for (const { t, value } of hourly) {
               if (value === null || value === undefined || isNaN(Number(value))) continue;
-              // shift to AST then read calendar date
               const astDate = new Date(t.getTime() + astOffset);
-              const key = astDate.toISOString().slice(0, 10);
+              const key = astDate.toISOString().slice(0, 10); // "YYYY-MM-DD"
               (map[key] = map[key] || []).push(Number(value));
             }
             return map;
           }
 
-          /* ═══════════════════════════════════════════════════════════
-           *  SOURCE 1 — NWS NDFD gridpoints  (wind + gust + direction)
+          /* ═══════════════════════════════════════════════════════
+           *  SOURCE 1 — NWS NDFD gridpoints  (wind / gust / dir)
            *  Fajardo nearshore: 18.3327 N, 65.6516 W
-           * ═══════════════════════════════════════════════════════════ */
+           * ═══════════════════════════════════════════════════════ */
           async function fetchWindForecast() {
             const UA = "RabirubiaTech/1.0 (forecast-card)";
-
             const ptRes = await fetch(
               "https://api.weather.gov/points/18.3327,-65.6516",
               { headers: { "User-Agent": UA } }
             );
             if (!ptRes.ok) throw new Error(`/points ${ptRes.status}`);
             const { gridId, gridX, gridY } = (await ptRes.json()).properties;
-            console.log(`NDFD grid → ${gridId} ${gridX},${gridY}`);
+            console.log(`NDFD grid: ${gridId} ${gridX},${gridY}`);
 
             const gdRes = await fetch(
               `https://api.weather.gov/gridpoints/${gridId}/${gridX},${gridY}`,
@@ -163,7 +162,6 @@ jobs:
             const p = (await gdRes.json()).properties;
 
             console.log("windSpeed uom:", p.windSpeed?.uom);
-            console.log("windGust  uom:", p.windGust?.uom);
 
             const windH = expandSeries(p.windSpeed?.values)
                             .map(x => ({ ...x, value: toMph(x.value, p.windSpeed?.uom) }));
@@ -178,156 +176,155 @@ jobs:
             };
           }
 
-          /* ═══════════════════════════════════════════════════════════
-           *  SOURCE 2 — NWS Marine Zone Text  (seas + wave period)
+          /* ═══════════════════════════════════════════════════════
+           *  SOURCE 2 — NWS Marine Zone Text  (seas + period)
            *
-           *  Product : FZCA52 TJSJ  (Coastal Waters Forecast SJU)
-           *  Zone    : AMZ726 — "Coastal waters east of Puerto Rico,
-           *            around Vieques, and around/north of Culebra
-           *            and Saint John"   ← exact Fajardo area
+           *  File : fzca52.tjsj.cwf.sju.txt   ← CORRECT filename
+           *  Zone : AMZ726 — coastal waters east of PR / Vieques
+           *         (exact Fajardo nearshore area)
            *
-           *  URL     : https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/tj/fzca52.txt
-           *  Format  : Period labels (TONIGHT / MONDAY / MONDAY NIGHT / …)
-           *            followed by "Seas N to M feet." and
-           *            "Wave Detail: Dir N feet at P seconds"
-           * ═══════════════════════════════════════════════════════════ */
+           *  Format: period labels are  .TODAY...  .FRIDAY NIGHT...
+           *          (leading dot + label + three dots)
+           *  Seas  : "Seas 5 to 7 feet."  or  "Seas around 6 feet."
+           *  Period: "Wave Detail: East 6 feet at 7 seconds"
+           * ═══════════════════════════════════════════════════════ */
           async function fetchWaveForecast() {
-            const url = "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/tj/fzca52.txt";
+
+            // CORRECT URL — confirmed live
+            const url = "https://tgftp.nws.noaa.gov/data/raw/fz/fzca52.tjsj.cwf.sju.txt";
             const raw = await fetch(url).then(r => r.text());
 
-            // ── isolate AMZ726 block ─────────────────────────────────
-            // Grab everything between "AMZ726" and the next "AMZ" zone header
-            const zoneMatch = raw.match(/AMZ726[\s\S]*?(?=\nAMZ\d{3}|\n---|\Z)/);
-            if (!zoneMatch) throw new Error("AMZ726 zone block not found in FZCA52");
-            const block = zoneMatch[0];
-            console.log("AMZ726 block (first 300 chars):", block.slice(0, 300));
+            // ── extract AMZ726 block (between "AMZ726" and next "$$") ──
+            const zoneStart = raw.indexOf("AMZ726");
+            if (zoneStart === -1) throw new Error("AMZ726 block not found");
+            const zoneEnd   = raw.indexOf("$$", zoneStart);
+            const block     = zoneEnd === -1 ? raw.slice(zoneStart)
+                                             : raw.slice(zoneStart, zoneEnd);
+            console.log("AMZ726 block preview:\n" + block.slice(0, 200));
 
-            // ── day-of-week to date mapping ──────────────────────────
-            // Build a map of { "MONDAY": "2025-03-05", … } for the next 7 days
+            // ── build date map: label → "YYYY-MM-DD" in AST ────────
+            // astNow is already shifted; set to midnight for day arithmetic
+            const todayMidnight = new Date(astNow);
+            todayMidnight.setHours(0, 0, 0, 0);
+
+            const isoKey = d => d.toISOString().slice(0, 10);
+
+            // Day-of-week names for next 8 days
             const DOW = ["SUNDAY","MONDAY","TUESDAY","WEDNESDAY",
                          "THURSDAY","FRIDAY","SATURDAY"];
-            const dayMap = {};
-            // "TODAY" and "REST OF TODAY" = today's AST date
-            // "TONIGHT" = today's AST date (evening, same calendar day)
-            // "MONDAY" / "MONDAY NIGHT" = nearest upcoming Monday, etc.
-            const todayAST = new Date(now);
-            // Shift now to AST midnight
-            todayAST.setTime(now.getTime() + astOffset);
-            todayAST.setHours(0, 0, 0, 0);
 
-            const isoDate = d => d.toISOString().slice(0, 10);
-
-            dayMap["TODAY"]         = isoDate(todayAST);
-            dayMap["REST OF TODAY"] = isoDate(todayAST);
-            dayMap["TONIGHT"]       = isoDate(todayAST);
+            const labelToDate = {};
+            labelToDate["TODAY"]         = isoKey(todayMidnight);
+            labelToDate["REST OF TODAY"] = isoKey(todayMidnight);
+            labelToDate["TONIGHT"]       = isoKey(todayMidnight);
 
             for (let i = 0; i < 8; i++) {
-              const d = new Date(todayAST.getTime() + i * 86400000);
-              const name = DOW[d.getDay()];
-              if (!dayMap[name])           dayMap[name]           = isoDate(d);
-              if (!dayMap[name + " NIGHT"]) dayMap[name + " NIGHT"] = isoDate(d);
+              const d    = new Date(todayMidnight.getTime() + i * 86400000);
+              const name = DOW[d.getUTCDay()];  // use UTC day since d is already AST-shifted
+              if (!labelToDate[name])              labelToDate[name]              = isoKey(d);
+              if (!labelToDate[name + " NIGHT"])   labelToDate[name + " NIGHT"]   = isoKey(d);
             }
+            console.log("Label→date map:", labelToDate);
 
-            // ── parse period blocks ──────────────────────────────────
-            // A period header looks like: "MONDAY\n" or "MONDAY NIGHT\n"
-            // (all caps, on its own line)
-            const periodPattern =
-              /^(REST OF TODAY|TODAY|TONIGHT|(?:MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)(?: NIGHT)?)\s*\n([\s\S]*?)(?=^(?:REST OF TODAY|TODAY|TONIGHT|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)|\Z)/gm;
+            // ── parse period blocks ─────────────────────────────────
+            // Each block starts with  \.LABEL...  on its own line
+            // Content runs until the next \.LABEL... or end of zone block
+            // Regex: dot + label (caps + spaces) + three dots + content
+            const periodRe = /^\.(REST OF TODAY|TODAY|TONIGHT|(?:MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)(?: NIGHT)?)\.{3}([\s\S]*?)(?=^\.[A-Z]|\z)/gm;
 
-            // seas accumulator: key = "YYYY-MM-DD", value = [numbers]
             const seasByDay   = {};
             const periodByDay = {};
-
             let m;
-            while ((m = periodPattern.exec(block)) !== null) {
+
+            while ((m = periodRe.exec(block)) !== null) {
               const label   = m[1].trim().toUpperCase();
               const content = m[2];
-              const dateKey = dayMap[label];
-              if (!dateKey) continue;
+              const dateKey = labelToDate[label];
+              if (!dateKey) {
+                console.log(`No date mapping for label: "${label}"`);
+                continue;
+              }
 
-              // Parse "Seas N to M feet." → average of N and M
+              // "Seas 5 to 7 feet." → avg(5,7) = 6.0
+              // "Seas around 6 feet." → 6.0
               const seasMatch = content.match(/Seas?\s+([\d.]+)\s+to\s+([\d.]+)\s+feet/i)
                              || content.match(/Seas?\s+around\s+([\d.]+)\s+feet/i);
               if (seasMatch) {
-                const lo = parseFloat(seasMatch[1]);
-                const hi = seasMatch[2] ? parseFloat(seasMatch[2]) : lo;
+                const lo  = parseFloat(seasMatch[1]);
+                const hi  = seasMatch[2] !== undefined ? parseFloat(seasMatch[2]) : lo;
                 const avg = parseFloat(((lo + hi) / 2).toFixed(1));
                 (seasByDay[dateKey] = seasByDay[dateKey] || []).push(avg);
-                console.log(`${label} (${dateKey}): seas ${lo}-${hi}ft → ${avg}ft`);
+                console.log(`  ${label} (${dateKey}): seas ${lo}-${hi}ft → ${avg}ft`);
+              } else {
+                console.log(`  ${label} (${dateKey}): no seas match in: ${content.slice(0,80)}`);
               }
 
-              // Parse "Wave Detail: Dir N feet at P seconds"
-              // Take the FIRST (dominant) component period
+              // "Wave Detail: East 6 feet at 7 seconds" → 7s (dominant = first component)
               const waveMatch = content.match(/Wave Detail[^.]*?at\s+([\d.]+)\s+seconds/i);
               if (waveMatch) {
                 const per = parseFloat(waveMatch[1]);
                 (periodByDay[dateKey] = periodByDay[dateKey] || []).push(per);
-                console.log(`${label} (${dateKey}): period ${per}s`);
+                console.log(`  ${label} (${dateKey}): period ${per}s`);
               }
             }
 
-            // Condense: one value per calendar day (average across periods)
-            const seasDay   = {};
-            const perDay    = {};
+            // Average day+night entries into single daily value
+            const seas   = {};
+            const period = {};
             for (const k of Object.keys(seasByDay)) {
-              seasDay[k] = parseFloat(mean(seasByDay[k]).toFixed(1));
+              seas[k] = parseFloat(mean(seasByDay[k]).toFixed(1));
             }
             for (const k of Object.keys(periodByDay)) {
-              perDay[k] = parseFloat(mean(periodByDay[k]).toFixed(1));
+              period[k] = parseFloat(mean(periodByDay[k]).toFixed(1));
             }
 
-            return { seas: seasDay, period: perDay };
+            console.log("Parsed seas:", seas);
+            console.log("Parsed period:", period);
+            return { seas, period };
           }
 
-          /* ═══════════════════════════════════════════════════════════
-           *  MERGE — build unified 7-day forecast array
-           * ═══════════════════════════════════════════════════════════ */
+          /* ═══════════════════════════════════════════════════════
+           *  MERGE — build unified 7-day array
+           * ═══════════════════════════════════════════════════════ */
           async function buildForecast() {
             const [windData, waveData] = await Promise.all([
-              fetchWindForecast().catch(e => {
-                console.error("Wind fetch failed:", e.message); return null;
-              }),
-              fetchWaveForecast().catch(e => {
-                console.error("Wave fetch failed:", e.message); return null;
-              })
+              fetchWindForecast().catch(e => { console.error("Wind failed:", e.message); return null; }),
+              fetchWaveForecast().catch(e => { console.error("Wave failed:", e.message); return null; })
             ]);
 
-            // Today's AST date string
-            const todayASTDate = new Date(now.getTime() + astOffset);
-            todayASTDate.setHours(0, 0, 0, 0);
+            const todayMidnight = new Date(astNow);
+            todayMidnight.setHours(0, 0, 0, 0);
 
             const rows = [];
             for (let i = 0; i < 7; i++) {
-              const d = new Date(todayASTDate.getTime() + i * 86400000);
+              const d   = new Date(todayMidnight.getTime() + i * 86400000);
               const key = d.toISOString().slice(0, 10);
 
-              const avgWind   = windData?.wind[key]?.length
-                ? Math.round(mean(windData.wind[key])) : null;
-              const avgGust   = windData?.gust[key]?.length
-                ? Math.round(mean(windData.gust[key])) : null;
-              const avgDir    = windData?.dir[key]?.length
-                ? Math.round(circularMean(windData.dir[key])) : null;
+              const avgWind   = windData?.wind[key]?.length ? Math.round(mean(windData.wind[key])) : null;
+              const avgGust   = windData?.gust[key]?.length ? Math.round(mean(windData.gust[key])) : null;
+              const avgDir    = windData?.dir[key]?.length  ? Math.round(circularMean(windData.dir[key])) : null;
               const avgSeas   = waveData?.seas[key]   ?? null;
               const avgPeriod = waveData?.period[key] ?? null;
 
               console.log(`${key}: wind=${avgWind}mph gust=${avgGust}mph dir=${avgDir}° seas=${avgSeas}ft per=${avgPeriod}s`);
 
-              // Display date label in AST
-              const displayDate = new Date(d.getTime() - astOffset);
+              // display date: shift back from AST-midnight to UTC for toLocaleDateString
               rows.push({
-                date: displayDate,
-                wind: avgWind, gust: avgGust, dir: avgDir,
-                wave: avgSeas, period: avgPeriod
+                date:   new Date(d.getTime() - astOffset),
+                wind:   avgWind,
+                gust:   avgGust,
+                dir:    avgDir,
+                wave:   avgSeas,
+                period: avgPeriod
               });
             }
             return rows;
           }
 
-          /* ── main ─────────────────────────────────────────────────── */
+          /* ── draw card ───────────────────────────────────────── */
           async function run() {
             await drawBackground();
 
-            /* header */
             const logo = await loadImage(
               "https://static.wixstatic.com/media/80c250_b1146919dfe046429a96648c59e2c413~mv2.png"
             );
@@ -339,13 +336,11 @@ jobs:
             ctx.fillStyle = "#1e40af";
             ctx.fillText(title, startX + 76, 130);
 
-            /* fetch */
             let rows;
             try {
               rows = await buildForecast();
             } catch(err) {
-              console.error("Forecast build failed:", err.message);
-              // flat east-PR fallback
+              console.error("buildForecast failed:", err.message);
               rows = Array.from({ length: 7 }, (_, i) => {
                 const d = new Date(now.getTime() + i * 86400000);
                 return { date: d, wind: 14, gust: 20, dir: 90, wave: 3.5, period: 8 };
@@ -354,8 +349,7 @@ jobs:
 
             /* table headers */
             const xs = [140, 300, 420, 540, 660, 780];
-            ctx.font      = "bold 18px system-ui";
-            ctx.fillStyle = "#334155";
+            ctx.font = "bold 18px system-ui"; ctx.fillStyle = "#334155";
             ["📅 Date","💨 Wind","🌬 Gusts","🧭 Dir","🌊 Seas","⏱ Period"]
               .forEach((h, i) => ctx.fillText(h, xs[i], 260));
 
@@ -364,9 +358,7 @@ jobs:
             rows.forEach(row => {
               const label = row.date.toLocaleDateString("en-US",
                 { weekday: "short", timeZone: "America/Puerto_Rico" });
-
-              ctx.font      = "18px system-ui";
-              ctx.fillStyle = "#0f172a";
+              ctx.font = "18px system-ui"; ctx.fillStyle = "#0f172a";
               ctx.fillText(label, xs[0], y);
 
               const wv = row.wind ?? 0;
@@ -383,23 +375,18 @@ jobs:
               y += 42;
             });
 
-            /* buoy section */
+            /* buoys */
             const [buoy43, buoy56] = await Promise.all([
               fetchBuoy("41043"), fetchBuoy("41056")
             ]);
-
             const bY=640, bW=720, bH=130, bX=(W-720)/2, cW=360;
-            ctx.textAlign  = "center";
-            ctx.font       = "bold 18px system-ui";
-            ctx.fillStyle  = "#1e293b";
+            ctx.textAlign = "center";
+            ctx.font = "bold 18px system-ui"; ctx.fillStyle = "#1e293b";
             ctx.fillText("📍 NOAA Buoy Observations", W/2, bY-15);
 
-            ctx.fillStyle  = "#f8fafc";
-            ctx.strokeStyle= "#cbd5e1";
-            ctx.lineWidth  = 2;
+            ctx.fillStyle = "#f8fafc"; ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 2;
             ctx.beginPath(); ctx.roundRect(bX, bY, bW, bH, 14); ctx.fill(); ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(bX+cW, bY); ctx.lineTo(bX+cW, bY+bH); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bX+cW, bY); ctx.lineTo(bX+cW, bY+bH); ctx.stroke();
 
             const bColor = h => {
               if (!h) return "#e5e7eb";
@@ -407,16 +394,14 @@ jobs:
               return v <= 3 ? "#22c55e" : v <= 5 ? "#eab308" : "#ef4444";
             };
 
-            ctx.font = "bold 16px system-ui";
-            ctx.fillStyle = bColor(buoy43?.height);
+            ctx.font = "bold 16px system-ui"; ctx.fillStyle = bColor(buoy43?.height);
             ctx.fillText("41043 – North of PR", bX+cW/2, bY+30);
             ctx.font = "15px system-ui"; ctx.fillStyle = "#0f172a";
             ctx.fillText(`Seas: ${buoy43?.height ?? "--"}`,   bX+cW/2, bY+58);
             ctx.fillText(`Period: ${buoy43?.period ?? "--"}`, bX+cW/2, bY+80);
             ctx.fillText(`Dir: ${buoy43?.dir ?? "--"}`,       bX+cW/2, bY+102);
 
-            ctx.font = "bold 16px system-ui";
-            ctx.fillStyle = bColor(buoy56?.height);
+            ctx.font = "bold 16px system-ui"; ctx.fillStyle = bColor(buoy56?.height);
             ctx.fillText("41056 – Near Vieques", bX+cW+cW/2, bY+30);
             ctx.font = "15px system-ui"; ctx.fillStyle = "#0f172a";
             ctx.fillText(`Seas: ${buoy56?.height ?? "--"}`,   bX+cW+cW/2, bY+58);
@@ -425,20 +410,18 @@ jobs:
 
             ctx.textAlign = "left";
 
-            /* source + footer */
             ctx.font = "13px system-ui"; ctx.fillStyle = "#94a3b8"; ctx.textAlign = "center";
             ctx.fillText(
               "Wind: NWS NDFD · Seas: NWS Marine Zone AMZ726 (East PR / Vieques)",
               W/2, 800
             );
-
             ctx.font = "16px system-ui"; ctx.fillStyle = "#475569";
-            const astStr = new Date(now.getTime() + astOffset)
-              .toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-            ctx.fillText(`Updated ${astStr} AST • RabirubiaTech`, W/2, 1010);
+            const timeStr = astNow.toLocaleTimeString("en-US",
+              { hour: "2-digit", minute: "2-digit" });
+            ctx.fillText(`Updated ${timeStr} AST • RabirubiaTech`, W/2, 1010);
 
             fs.writeFileSync("rabirubia_7day_windwave.png", canvas.toBuffer());
-            console.log("✅ Card saved successfully.");
+            console.log("✅ Card saved.");
           }
 
           run().catch(e => { console.error("FATAL:", e); process.exit(1); });
@@ -451,5 +434,5 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Fix: parse NWS marine zone AMZ726 for real seas/period data"
+          git diff --staged --quiet || git commit -m "Fix: correct FZCA52 URL and leading-dot period label regex"
           git push
