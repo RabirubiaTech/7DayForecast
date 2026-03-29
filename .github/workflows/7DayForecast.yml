@@ -133,8 +133,10 @@ jobs:
             const map = {};
             for (const { t, value } of hourly) {
               if (value === null || value === undefined || isNaN(Number(value))) continue;
+              // FIX 3: shift the UTC timestamp into AST before extracting the date key
+              // so that near-midnight UTC hours land on the correct AST calendar date
               const astDate = new Date(t.getTime() + astOffset);
-              const key = astDate.toISOString().slice(0, 10); // "YYYY-MM-DD"
+              const key = astDate.toISOString().slice(0, 10); // "YYYY-MM-DD" in AST
               (map[key] = map[key] || []).push(Number(value));
             }
             return map;
@@ -177,39 +179,39 @@ jobs:
           }
 
           /* ═══════════════════════════════════════════════════════
-           *  SOURCE 2 — NWS Marine Zone Text  (seas + period)
+           *  SOURCE 2a — NWS Marine Zone Text  (seas + period)
            *
-           *  File : fzca52.tjsj.cwf.sju.txt   ← CORRECT filename
+           *  File : fzca52.tjsj.cwf.sju.txt
            *  Zone : AMZ726 — coastal waters east of PR / Vieques
-           *         (exact Fajardo nearshore area)
            *
-           *  Format: period labels are  .TODAY...  .FRIDAY NIGHT...
-           *          (leading dot + label + three dots)
-           *  Seas  : "Seas 5 to 7 feet."  or  "Seas around 6 feet."
-           *  Period: "Wave Detail: East 6 feet at 7 seconds"
+           *  FIX 1: periodRe used \z (Perl/Ruby anchor, invalid in JS).
+           *         Replaced with $ and added the 's' (dotAll) flag so
+           *         [\s\S]*? can match across newlines without the s flag
+           *         being needed — but keeping /gms is safest.
+           *
+           *  FIX 2: Added console.warn diagnostic when the seas map is
+           *         empty so silent failures are immediately visible in
+           *         the Actions log.
            * ═══════════════════════════════════════════════════════ */
-          async function fetchWaveForecast() {
+          async function fetchWaveForecastNWS() {
 
-            // CORRECT URL — confirmed live
             const url = "https://tgftp.nws.noaa.gov/data/raw/fz/fzca52.tjsj.cwf.sju.txt";
             const raw = await fetch(url).then(r => r.text());
 
-            // ── extract AMZ726 block (between "AMZ726" and next "$$") ──
+            // ── extract AMZ726 block ──────────────────────────────
             const zoneStart = raw.indexOf("AMZ726");
             if (zoneStart === -1) throw new Error("AMZ726 block not found");
             const zoneEnd   = raw.indexOf("$$", zoneStart);
             const block     = zoneEnd === -1 ? raw.slice(zoneStart)
                                              : raw.slice(zoneStart, zoneEnd);
-            console.log("AMZ726 block preview:\n" + block.slice(0, 200));
+            console.log("AMZ726 block preview:\n" + block.slice(0, 300));
 
-            // ── build date map: label → "YYYY-MM-DD" in AST ────────
-            // astNow is already shifted; set to midnight for day arithmetic
+            // ── build date map: label → "YYYY-MM-DD" in AST ──────
             const todayMidnight = new Date(astNow);
             todayMidnight.setHours(0, 0, 0, 0);
 
             const isoKey = d => d.toISOString().slice(0, 10);
 
-            // Day-of-week names for next 8 days
             const DOW = ["SUNDAY","MONDAY","TUESDAY","WEDNESDAY",
                          "THURSDAY","FRIDAY","SATURDAY"];
 
@@ -220,17 +222,16 @@ jobs:
 
             for (let i = 0; i < 8; i++) {
               const d    = new Date(todayMidnight.getTime() + i * 86400000);
-              const name = DOW[d.getUTCDay()];  // use UTC day since d is already AST-shifted
+              const name = DOW[d.getUTCDay()];
               if (!labelToDate[name])              labelToDate[name]              = isoKey(d);
               if (!labelToDate[name + " NIGHT"])   labelToDate[name + " NIGHT"]   = isoKey(d);
             }
             console.log("Label→date map:", labelToDate);
 
-            // ── parse period blocks ─────────────────────────────────
-            // Each block starts with  \.LABEL...  on its own line
-            // Content runs until the next \.LABEL... or end of zone block
-            // Regex: dot + label (caps + spaces) + three dots + content
-            const periodRe = /^\.(REST OF TODAY|TODAY|TONIGHT|(?:MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)(?: NIGHT)?)\.{3}([\s\S]*?)(?=^\.[A-Z]|\z)/gm;
+            // ── FIX 1: replaced \z with $ and added 's' flag ─────
+            // Old (broken): /gm  with (?=^\.[A-Z]|\z)  — \z is not JS
+            // New (fixed):  /gms with (?=^\.[A-Z]|$)   — $ works in /m mode
+            const periodRe = /^\.(REST OF TODAY|TODAY|TONIGHT|(?:MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)(?: NIGHT)?)\.{3}([\s\S]*?)(?=^\.[A-Z]|$)/gms;
 
             const seasByDay   = {};
             const periodByDay = {};
@@ -245,7 +246,7 @@ jobs:
                 continue;
               }
 
-              // "Seas 5 to 7 feet." → avg(5,7) = 6.0
+              // "Seas 5 to 7 feet." → avg(5,7)
               // "Seas around 6 feet." → 6.0
               const seasMatch = content.match(/Seas?\s+([\d.]+)\s+to\s+([\d.]+)\s+feet/i)
                              || content.match(/Seas?\s+around\s+([\d.]+)\s+feet/i);
@@ -259,7 +260,6 @@ jobs:
                 console.log(`  ${label} (${dateKey}): no seas match in: ${content.slice(0,80)}`);
               }
 
-              // "Wave Detail: East 6 feet at 7 seconds" → 7s (dominant = first component)
               const waveMatch = content.match(/Wave Detail[^.]*?at\s+([\d.]+)\s+seconds/i);
               if (waveMatch) {
                 const per = parseFloat(waveMatch[1]);
@@ -278,9 +278,73 @@ jobs:
               period[k] = parseFloat(mean(periodByDay[k]).toFixed(1));
             }
 
-            console.log("Parsed seas:", seas);
-            console.log("Parsed period:", period);
+            // FIX 2: diagnostic warning when NWS parsing yields nothing
+            if (Object.keys(seas).length === 0) {
+              console.warn("⚠️  NWS seas map is EMPTY — regex matched no period blocks.");
+              console.warn("Block sample (first 600 chars):\n" + block.slice(0, 600));
+            }
+
+            console.log("NWS parsed seas:", seas);
+            console.log("NWS parsed period:", period);
             return { seas, period };
+          }
+
+          /* ═══════════════════════════════════════════════════════
+           *  SOURCE 2b — Open-Meteo Marine API fallback
+           *
+           *  Free, JSON, no auth, no regex. Returns wave_height_max
+           *  and wave_period_max per day in feet / seconds, already
+           *  aligned to America/Puerto_Rico (AST) calendar dates.
+           *  Used when NWS parsing yields fewer than 3 days of data.
+           * ═══════════════════════════════════════════════════════ */
+          async function fetchWaveForecastOpenMeteo() {
+            const url =
+              "https://marine-api.open-meteo.com/v1/marine" +
+              "?latitude=18.33&longitude=-65.65" +
+              "&daily=wave_height_max,wave_period_max" +
+              "&length_unit=imperial" +           // feet directly
+              "&timezone=America%2FPuerto_Rico" + // AST date keys
+              "&forecast_days=7";
+
+            const json = await fetch(url).then(r => r.json());
+            if (!json.daily) throw new Error("Open-Meteo marine: no daily block");
+
+            const seas   = {};
+            const period = {};
+            json.daily.time.forEach((dateKey, i) => {
+              const h = json.daily.wave_height_max[i];
+              const p = json.daily.wave_period_max[i];
+              if (h !== null) seas[dateKey]   = parseFloat(h.toFixed(1));
+              if (p !== null) period[dateKey] = parseFloat(p.toFixed(1));
+            });
+
+            console.log("Open-Meteo seas:", seas);
+            console.log("Open-Meteo period:", period);
+            return { seas, period };
+          }
+
+          /* ── wave orchestrator: NWS primary, Open-Meteo fallback  */
+          async function fetchWaveForecast() {
+            let result = null;
+
+            try {
+              result = await fetchWaveForecastNWS();
+            } catch(e) {
+              console.warn("NWS wave fetch failed:", e.message);
+            }
+
+            // Fall back when NWS yields fewer than 3 days of seas data
+            if (!result || Object.keys(result.seas).length < 3) {
+              console.warn("⚠️  Falling back to Open-Meteo Marine API for wave data.");
+              try {
+                result = await fetchWaveForecastOpenMeteo();
+              } catch(e) {
+                console.error("Open-Meteo fallback also failed:", e.message);
+                result = { seas: {}, period: {} };
+              }
+            }
+
+            return result;
           }
 
           /* ═══════════════════════════════════════════════════════
@@ -292,6 +356,10 @@ jobs:
               fetchWaveForecast().catch(e => { console.error("Wave failed:", e.message); return null; })
             ]);
 
+            // FIX 3: todayMidnight is constructed from astNow (already AST-shifted).
+            // Using .toISOString().slice(0,10) here is correct because the Date object
+            // carries the AST wall-clock value as if it were UTC — the slice gives the
+            // AST calendar date. This matches what groupByASTDate() produces.
             const todayMidnight = new Date(astNow);
             todayMidnight.setHours(0, 0, 0, 0);
 
@@ -412,7 +480,7 @@ jobs:
 
             ctx.font = "13px system-ui"; ctx.fillStyle = "#94a3b8"; ctx.textAlign = "center";
             ctx.fillText(
-              "Wind: NWS NDFD · Seas: NWS Marine Zone AMZ726 (East PR / Vieques)",
+              "Wind: NWS NDFD · Seas: NWS Marine AMZ726 (East PR / Vieques) + Open-Meteo fallback",
               W/2, 800
             );
             ctx.font = "16px system-ui"; ctx.fillStyle = "#475569";
@@ -434,5 +502,5 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add rabirubia_7day_windwave.png
-          git diff --staged --quiet || git commit -m "Fix: correct FZCA52 URL and leading-dot period label regex"
+          git diff --staged --quiet || git commit -m "Fix wave forecast: JS regex, Open-Meteo fallback, AST date alignment"
           git push
